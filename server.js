@@ -125,3 +125,17 @@ app.get("*", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
 
+const path = require("path");
+
+// Serve static frontend files
+app.use(express.static(path.join(__dirname)));
+
+// For any non-API route, send index.html
+app.get("*", (req, res) => {
+  if (!req.path.startsWith("/api")) {
+    res.sendFile(path.join(__dirname, "index.html"));
+  }
+});
+
+
+

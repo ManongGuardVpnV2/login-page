@@ -1,4 +1,4 @@
-// server.js (CommonJS, persistent SQLite)
+// server.js (CommonJS, persistent SQLite, serve frontend)
 const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
@@ -6,6 +6,7 @@ const sqlite3 = require("sqlite3");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const SECRET = "supersecretkey"; // ⚠️ replace in production
@@ -17,50 +18,73 @@ const db = new sqlite3.Database(DB_FILE);
 
 // Create users table if it doesn't exist
 if (!dbExists) {
-  db.run("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)", err => {
-    if (err) console.error("Failed to create table:", err);
-    else console.log("Users table created successfully.");
-  });
+  db.run(
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)",
+    (err) => {
+      if (err) console.error("Failed to create table:", err);
+      else console.log("Users table created successfully.");
+    }
+  );
 }
 
 app.use(cors());
 app.use(bodyParser.json());
 
+// ----------------- API ROUTES -----------------
+
 // Register
 app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: "Missing fields" });
+  if (!username || !password)
+    return res.status(400).json({ error: "Missing fields" });
 
   const hashed = await bcrypt.hash(password, 10);
-  db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hashed], function (err) {
-    if (err) return res.status(400).json({ error: "User already exists" });
-    res.json({ message: "Registered successfully" });
-  });
+  db.run(
+    "INSERT INTO users (username, password) VALUES (?, ?)",
+    [username, hashed],
+    function (err) {
+      if (err) return res.status(400).json({ error: "User already exists" });
+      res.json({ message: "Registered successfully" });
+    }
+  );
 });
 
 // Login
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
-  db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
-    if (!user) return res.status(400).json({ error: "Invalid username" });
+  db.get(
+    "SELECT * FROM users WHERE username = ?",
+    [username],
+    async (err, user) => {
+      if (!user) return res.status(400).json({ error: "Invalid username" });
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ error: "Invalid password" });
+      const match = await bcrypt.compare(password, user.password);
+      if (!match) return res.status(400).json({ error: "Invalid password" });
 
-    const token = jwt.sign({ id: user.id, username: user.username }, SECRET, { expiresIn: "24h" });
-    res.json({ message: "Login successful", token });
-  });
+      const token = jwt.sign(
+        { id: user.id, username: user.username },
+        SECRET,
+        { expiresIn: "24h" }
+      );
+      res.json({ message: "Login successful", token });
+    }
+  );
 });
 
 // Forgot password
 app.post("/api/forgot", (req, res) => {
   const { username } = req.body;
-  const newPass = "new123"; // ⚠️ in production, use email reset
-  bcrypt.hash(newPass, 10).then(hashed => {
-    db.run("UPDATE users SET password = ? WHERE username = ?", [hashed, username], function (err) {
-      if (err || this.changes === 0) return res.status(400).json({ error: "User not found" });
-      res.json({ message: `Password reset. Temporary password: ${newPass}` });
-    });
+  const newPass = "new123"; // ⚠️ replace in production
+  bcrypt.hash(newPass, 10).then((hashed) => {
+    db.run(
+      "UPDATE users SET password = ? WHERE username = ?",
+      [hashed, username],
+      function (err) {
+        if (err || this.changes === 0)
+          return res.status(400).json({ error: "User not found" });
+        res.json({ message: `Password reset. Temporary password: ${newPass}` });
+      }
+    );
   });
 });
 
@@ -81,8 +105,24 @@ function authenticate(req, res, next) {
 app.get("/api/dashboard", authenticate, (req, res) => {
   res.json({
     message: `Welcome ${req.user.username}!`,
-    secretData: "🔒 This is protected content only you can see."
+    secretData: "🔒 This is protected content only you can see.",
   });
 });
 
-app.listen(3000, () => console.log("✅ Server running on http://localhost:3000"));
+// ----------------- SERVE FRONTEND -----------------
+
+// Serve static files (index.html, CSS, JS)
+app.use(express.static(path.join(__dirname)));
+
+// For any non-API route, serve index.html
+app.get("*", (req, res) => {
+  if (!req.path.startsWith("/api")) {
+    res.sendFile(path.join(__dirname, "index.html"));
+  }
+});
+
+// ----------------- START SERVER -----------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () =>
+  console.log(`✅ Server running on http://localhost:${PORT}`)
+);

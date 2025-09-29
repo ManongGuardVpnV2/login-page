@@ -80,7 +80,8 @@
   </div>
 
 <script>
-  const API = "http://localhost:3000/api";
+  // Update API URL to your Render deployment
+  const API = "https://welcome-boy.onrender.com/api";
 
   function showForm(type) {
     document.querySelectorAll("form").forEach(f => f.classList.remove("active"));
@@ -99,16 +100,21 @@
     const token = localStorage.getItem("token");
     if (!token) return showForm("login");
 
-    const res = await fetch(`${API}/dashboard`, { headers: { Authorization: `Bearer ${token}` } });
-    const data = await res.json();
+    try {
+      const res = await fetch(`${API}/dashboard`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
 
-    if (data.error) {
-      alert("Session expired. Please log in again.");
-      logout();
-    } else {
-      document.getElementById("auth-box").style.display = "none";
-      document.getElementById("dashboard").style.display = "block";
-      document.getElementById("dashboard-data").innerText = data.secretData;
+      if (data.error) {
+        alert("Session expired. Please log in again.");
+        logout();
+      } else {
+        document.getElementById("auth-box").style.display = "none";
+        document.getElementById("dashboard").style.display = "block";
+        document.getElementById("dashboard-data").innerText = data.secretData;
+      }
+    } catch (err) {
+      alert("Server unreachable. Please check your internet connection.");
+      document.getElementById("auth-box").style.display = "block";
     }
   }
 
@@ -116,13 +122,17 @@
   document.getElementById("login-form").addEventListener("submit", async e => {
     e.preventDefault();
     const { username, password } = e.target;
-    const res = await fetch(`${API}/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.value, password: password.value }),
-    });
-    const data = await res.json();
-    if (data.token) { localStorage.setItem("token", data.token); loadDashboard(); }
-    else alert(data.error || "Login failed");
+    try {
+      const res = await fetch(`${API}/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.value, password: password.value }),
+      });
+      const data = await res.json();
+      if (data.token) { localStorage.setItem("token", data.token); loadDashboard(); }
+      else alert(data.error || "Login failed");
+    } catch (err) {
+      alert("Server unreachable. Please check your internet connection.");
+    }
   });
 
   // Register
@@ -130,22 +140,32 @@
     e.preventDefault();
     const { username, password, confirm } = e.target;
     if (password.value !== confirm.value) return alert("Passwords do not match");
-    const res = await fetch(`${API}/register`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.value, password: password.value }),
-    });
-    alert(JSON.stringify(await res.json()));
+    try {
+      const res = await fetch(`${API}/register`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.value, password: password.value }),
+      });
+      const data = await res.json();
+      alert(JSON.stringify(data));
+    } catch (err) {
+      alert("Server unreachable. Please check your internet connection.");
+    }
   });
 
   // Forgot Password
   document.getElementById("forgot-form").addEventListener("submit", async e => {
     e.preventDefault();
     const { username } = e.target;
-    const res = await fetch(`${API}/forgot`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.value }),
-    });
-    alert(JSON.stringify(await res.json()));
+    try {
+      const res = await fetch(`${API}/forgot`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.value }),
+      });
+      const data = await res.json();
+      alert(JSON.stringify(data));
+    } catch (err) {
+      alert("Server unreachable. Please check your internet connection.");
+    }
   });
 
   // Logout
@@ -156,5 +176,6 @@
     showForm("login");
   }
 </script>
+
 </body>
 </html>

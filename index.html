@@ -10,13 +10,22 @@
   <!-- Login Card -->
   <div id="loginCard" class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
     <h2 class="text-2xl font-bold text-center mb-4">Enter Access Token</h2>
+
     <input id="tokenInput" type="password" placeholder="Enter token" 
       class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+
     <button onclick="validateToken()" 
       class="w-full mt-4 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">
       Login
     </button>
+
+    <button onclick="getToken()" 
+      class="w-full mt-2 bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg">
+      Get Token (Demo)
+    </button>
+
     <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
+    <p id="demoToken" class="text-xs text-gray-600 mt-2"></p>
   </div>
 
   <!-- Success Card -->
@@ -35,49 +44,14 @@
     let expiryTime;
     let countdownInterval;
     let refreshTimeout;
-    let cryptoKey;
 
-    // --- Encryption helpers ---
-    async function generateKey() {
-      cryptoKey = await crypto.subtle.generateKey(
-        { name: "AES-GCM", length: 256 },
-        true,
-        ["encrypt", "decrypt"]
-      );
+    async function getToken() {
+      const res = await fetch("/get-token");
+      const data = await res.json();
+      document.getElementById("demoToken").innerText = "Demo token: " + data.token;
+      document.getElementById("tokenInput").value = data.token;
     }
 
-    async function encryptData(data) {
-      const encoder = new TextEncoder();
-      const encoded = encoder.encode(data);
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ciphertext = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv },
-        cryptoKey,
-        encoded
-      );
-      return btoa(JSON.stringify({
-        iv: Array.from(iv),
-        data: Array.from(new Uint8Array(ciphertext))
-      }));
-    }
-
-    async function decryptData(base64) {
-      try {
-        const decoded = JSON.parse(atob(base64));
-        const iv = new Uint8Array(decoded.iv);
-        const ciphertext = new Uint8Array(decoded.data);
-        const decrypted = await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv },
-          cryptoKey,
-          ciphertext
-        );
-        return new TextDecoder().decode(decrypted);
-      } catch {
-        return null;
-      }
-    }
-
-    // --- Auth Flow ---
     async function validateToken() {
       const token = document.getElementById("tokenInput").value;
       const errorMsg = document.getElementById("errorMsg");
@@ -91,10 +65,8 @@
 
         const data = await res.json();
         if (data.success) {
-          const encryptedToken = await encryptData(token);
-          localStorage.setItem("token", encryptedToken);
+          localStorage.setItem("token", token);
           localStorage.setItem("expiry", data.expiry);
-
           showSuccess(token, data.expiry);
         } else {
           errorMsg.classList.remove("hidden");
@@ -136,7 +108,7 @@
         document.getElementById("countdown").innerText = `${hours}h ${minutes}m ${seconds}s`;
       }, 1000);
 
-      // Auto-refresh 30 minutes before expiry
+      // auto-refresh 30 min before expiry
       const refreshIn = expiryTime - Date.now() - (30 * 60 * 1000);
       if (refreshIn > 0) {
         refreshTimeout = setTimeout(() => refreshToken(token), refreshIn);
@@ -153,10 +125,8 @@
 
         const data = await res.json();
         if (data.success) {
-          const encryptedToken = await encryptData(data.token);
-          localStorage.setItem("token", encryptedToken);
+          localStorage.setItem("token", data.token);
           localStorage.setItem("expiry", data.expiry);
-
           showSuccess(data.token, data.expiry);
         } else {
           logout();
@@ -175,24 +145,18 @@
       document.getElementById("successCard").classList.add("hidden");
       document.getElementById("loginCard").classList.remove("hidden");
       document.getElementById("tokenInput").value = "";
+      document.getElementById("demoToken").innerText = "";
     }
 
-    // --- Restore session ---
-    window.onload = async () => {
-      await generateKey();
-
+    // Restore session on reload
+    window.onload = () => {
       const savedToken = localStorage.getItem("token");
       const savedExpiry = localStorage.getItem("expiry");
 
       if (savedToken && savedExpiry) {
         const now = Date.now();
         if (now < parseInt(savedExpiry)) {
-          const decryptedToken = await decryptData(savedToken);
-          if (decryptedToken) {
-            showSuccess(decryptedToken, parseInt(savedExpiry));
-          } else {
-            logout();
-          }
+          showSuccess(savedToken, parseInt(savedExpiry));
         } else {
           logout();
         }

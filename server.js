@@ -12,9 +12,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public"))); // serve frontend
 
-let tokens = {}; // use DB or Redis in production
+let tokens = {}; // production: use DB or Redis
 
-// Create new token
+// Generate a new token (demo purpose)
 function createToken() {
   const token = crypto.randomBytes(16).toString("hex"); // 32 chars
   const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24h
@@ -22,25 +22,20 @@ function createToken() {
   return { token, expiry };
 }
 
-// Refresh token
-function refreshToken(oldToken) {
-  if (!tokens[oldToken]) return null;
-  const expiry = tokens[oldToken];
-  if (Date.now() > expiry) {
-    delete tokens[oldToken];
-    return null;
+// Validate token
+function validateToken(token) {
+  if (!tokens[token]) return false;
+  if (Date.now() > tokens[token]) {
+    delete tokens[token];
+    return false;
   }
-  const newToken = crypto.randomBytes(16).toString("hex");
-  const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
-  delete tokens[oldToken];
-  tokens[newToken] = newExpiry;
-  return { token: newToken, expiry: newExpiry };
+  return true;
 }
 
 // --- API Routes ---
 
-// Demo: issue token (admin only in production)
-app.get("/get-token", (req, res) => {
+// Demo: generate a token
+app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
 });
@@ -48,33 +43,16 @@ app.get("/get-token", (req, res) => {
 // Validate token
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
-  if (!tokens[token]) return res.status(400).json({ success: false, error: "Invalid token" });
-
-  const expiry = tokens[token];
-  if (Date.now() > expiry) {
-    delete tokens[token];
-    return res.status(400).json({ success: false, error: "Token expired" });
+  if (validateToken(token)) {
+    res.json({ success: true });
+  } else {
+    res.status(400).json({ success: false, error: "Invalid or expired token" });
   }
-
-  res.json({ success: true, expiry });
 });
 
-// Refresh token
-app.post("/refresh-token", (req, res) => {
-  const { token } = req.body;
-  const refreshed = refreshToken(token);
-  if (!refreshed) return res.status(400).json({ success: false, error: "Cannot refresh" });
-  res.json({ success: true, ...refreshed });
-});
-
-// Admin page (for generating tokens)
-app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/admin.html"));
-});
-
-// Fallback serve frontend
+// Serve frontend
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/index.html"));
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 const PORT = process.env.PORT || 3000;

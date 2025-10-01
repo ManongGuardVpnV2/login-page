@@ -106,28 +106,70 @@ app.get("/iptv", (req, res) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>IPTV Access</title>
-<style>body,html{margin:0;padding:0;height:100%;}</style>
+<style>
+  body, html { margin:0; padding:0; height:100%; display:flex; flex-direction:column; }
+  iframe { flex:1; border:none; width:100%; }
+  #countdownBar { height:40px; background:#1E40AF; color:white; display:flex; justify-content:center; align-items:center; font-family:monospace; font-weight:bold; font-size:16px; }
+</style>
 </head>
 <body>
+<div id="countdownBar">Loading session...</div>
+<iframe id="iptvFrame"></iframe>
+
 <script>
+let expiryTime;
+function getCookie(name){
+  const c=document.cookie.split(";").find(c=>c.trim().startsWith(name+"="));
+  return c?c.split("=")[1]:null;
+}
+
+// Check session and load IPTV iframe
 fetch('/check-session')
-.then(res => { if(!res.ok){window.location.href='/'; throw 'No session';} return res.json();})
+.then(res => {
+  if(!res.ok){ window.location.href='/'; throw 'No session'; }
+  return res.json();
+})
 .then(data => {
   if(data.success){
-    const iframe = document.createElement('iframe');
-    iframe.src = 'https://tambaynoodtv.site/';
-    iframe.style.width='100%';
-    iframe.style.height='100%';
-    iframe.style.border='none';
-    document.body.appendChild(iframe);
-  } else { window.location.href = '/'; }
+    document.getElementById('iptvFrame').src='https://tambaynoodtv.site/';
+    // Fetch expiry from server-side (optional: can store expiry in localStorage when login)
+    fetch('/refresh-session',{method:'POST'}); // refresh session
+    // For countdown, request the expiry from login page storage (fallback: 24h)
+    expiryTime=Date.now() + 24*60*60*1000; 
+    startCountdown();
+    setInterval(refreshSession,5*60*1000);
+  } else { window.location.href='/'; }
 })
-.catch(err => console.log(err));
+.catch(err=>console.log(err));
+
+// Countdown function
+function startCountdown(){
+  const countdownEl=document.getElementById('countdownBar');
+  setInterval(()=>{
+    const now=Date.now();
+    const distance=expiryTime-now;
+    if(distance<=0){
+      alert('Session expired. Returning to login.');
+      window.location.href='/';
+      return;
+    }
+    const hours=Math.floor((distance/(1000*60*60))%24);
+    const minutes=Math.floor((distance/(1000*60))%60);
+    const seconds=Math.floor((distance/1000)%60);
+    countdownEl.innerText=\`Session expires in: \${hours}h \${minutes}m \${seconds}s\`;
+  },1000);
+}
+
+// Auto-refresh session
+async function refreshSession(){
+  try{ await fetch('/refresh-session',{method:'POST'}); }catch{ window.location.href='/'; }
+}
 </script>
 </body>
 </html>`;
   res.send(html);
 });
+
 
 // Login page
 app.get("*", (req, res) => {
@@ -172,3 +214,4 @@ async function refreshSession(){try{await fetch("/refresh-session",{method:"POST
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log("✅ Server running on port "+PORT));
+

@@ -133,16 +133,10 @@ document.getElementById("login-form").addEventListener("submit", async e => {
   <p>Streaming your content...</p>
   <button onclick="logout()">Logout</button>
 </div>
-
-<script>
 function logout() {
     localStorage.removeItem("token");
     window.location.href = "/";
 }
-
-
-
-
 // Register
 document.getElementById("register-form").addEventListener("submit", async e => {
   e.preventDefault();
@@ -179,6 +173,7 @@ function logout() {
 </script>
 </body>
 </html>
+
 
 
 

@@ -1,159 +1,143 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tambay Nood IPTV</title>
-
-<!-- Tailwind CSS -->
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-/* ===== LOGIN STYLES ===== */
-body { font-family: Arial, sans-serif; margin:0; background:#000; color:#fff; }
-.hidden { display:none; }
-
-/* Login Box */
-#auth-box { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#111; padding:20px; border-radius:12px; width:300px; box-shadow:0 4px 10px rgba(255,255,255,0.2); }
-#auth-box h2 { text-align:center; margin-bottom:15px; font-size:1.5rem; }
-#auth-box form { display:none; flex-direction:column; }
-#auth-box form.active { display:flex; }
-#auth-box input { margin:8px 0; padding:10px; border:1px solid #555; border-radius:8px; background:#222; color:#fff; }
-#auth-box button { margin-top:10px; padding:10px; border:none; background:#2563eb; color:white; font-weight:bold; border-radius:8px; cursor:pointer; }
-#auth-box button:hover { background:#1d4ed8; }
-.links { text-align:center; margin-top:10px; }
-.links a { margin:0 5px; color:#2563eb; text-decoration:none; font-size:14px; }
-.links a:hover { text-decoration:underline; }
-
-/* ===== IPTV PAGE STYLES ===== */
-#iptv-page { display:none; }
-header { text-align:center; padding:20px; font-size:2rem; font-weight:bold; color:#ff0; text-shadow:0 0 8px #0ff; }
-#videoContainer { width:90%; max-width:900px; margin:20px auto; background:#000; border-radius:12px; overflow:hidden; }
-#video { width:100%; height:500px; object-fit:contain; background:#000; }
-.logout-btn { display:block; margin:20px auto; padding:10px 20px; border:none; border-radius:8px; background:#f00; color:#fff; font-weight:bold; cursor:pointer; }
-.logout-btn:hover { background:#c00; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Token Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
+<body class="flex items-center justify-center min-h-screen bg-gray-100">
+  <!-- Login Card -->
+  <div id="loginCard" class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
+    <h2 class="text-2xl font-bold text-center mb-4">Enter Access Token</h2>
+    <input id="tokenInput" type="password" placeholder="Enter token" 
+      class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+    <button onclick="validateToken()" 
+      class="w-full mt-4 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">
+      Login
+    </button>
+    <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
 
-<!-- ===== LOGIN BOX ===== -->
-<div id="auth-box">
-  <h2 id="form-title">Login</h2>
-
-  <form id="login-form" class="active">
-    <input type="text" name="username" placeholder="Username" required>
-    <input type="password" name="password" placeholder="Password" required>
-    <button type="submit">Login</button>
-  </form>
-
-  <form id="register-form">
-    <input type="text" name="username" placeholder="Choose Username" required>
-    <input type="password" name="password" placeholder="Choose Password" required>
-    <input type="password" name="confirm" placeholder="Confirm Password" required>
-    <button type="submit">Register</button>
-  </form>
-
-  <form id="forgot-form">
-    <input type="text" name="username" placeholder="Enter Username" required>
-    <button type="submit">Reset Password</button>
-  </form>
-
-  <div class="links">
-    <a href="#" onclick="showForm('login')">Login</a> | 
-    <a href="#" onclick="showForm('register')">Register</a> | 
-    <a href="#" onclick="showForm('forgot')">Forgot?</a>
+    <!-- For demo: request new token -->
+    <button onclick="requestToken()" 
+      class="w-full mt-4 bg-gray-700 hover:bg-gray-800 text-white font-semibold py-2 px-4 rounded-lg">
+      Generate New Token (Demo)
+    </button>
+    <p id="demoToken" class="mt-2 text-xs text-gray-500"></p>
   </div>
-</div>
 
-<!-- ===== IPTV PAGE ===== -->
-<div id="iptv-page">
-  <header>📺 Tambay Nood IPTV 📺</header>
-  <div id="videoContainer">
-    <video id="video" autoplay playsinline controls>
-      <source src="https://your-iptv-stream-link.m3u8" type="application/x-mpegURL">
-      Your browser does not support HTML5 video.
-    </video>
+  <!-- Success Card -->
+  <div id="successCard" class="hidden w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">
+    <h2 class="text-2xl font-bold mb-4">Access Granted ✅</h2>
+    <p class="mb-2">Your token is valid for the next:</p>
+    <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
+
+    <button onclick="logout()" 
+      class="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg">
+      Logout
+    </button>
   </div>
-  <button class="logout-btn" onclick="logout()">Logout</button>
-</div>
 
-<script>
-const API = "https://login-page-1djf.onrender.com/api"; // <-- YOUR BACKEND API URL
+  <script>
+    let expiryTime;
+    let countdownInterval;
 
-function showForm(type){
-  document.querySelectorAll("#auth-box form").forEach(f=>f.classList.remove("active"));
-  document.getElementById(type+"-form").classList.add("active");
-  document.getElementById("form-title").innerText = type.charAt(0).toUpperCase() + type.slice(1);
-}
+    async function requestToken() {
+      const res = await fetch("http://localhost:3000/generate-token", { method: "POST" });
+      const data = await res.json();
+      document.getElementById("demoToken").innerText = "Demo Token: " + data.token;
+    }
 
-// Check login on page load
-window.onload = ()=>{
-  const token = localStorage.getItem("token");
-  if(token) showIPTV();
-  else document.getElementById("auth-box").style.display="block";
-};
+    async function validateToken() {
+      const token = document.getElementById("tokenInput").value;
+      const errorMsg = document.getElementById("errorMsg");
 
-// Show IPTV page
-function showIPTV(){
-  document.getElementById("auth-box").style.display="none";
-  document.getElementById("iptv-page").style.display="block";
-}
+      try {
+        const res = await fetch("http://localhost:3000/validate-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
 
-// Logout
-function logout(){
-  localStorage.removeItem("token");
-  document.getElementById("iptv-page").style.display="none";
-  document.getElementById("auth-box").style.display="block";
-  showForm("login");
-}
+        const data = await res.json();
+        if (data.success) {
+          // Save in localStorage
+          localStorage.setItem("token", token);
+          localStorage.setItem("expiry", data.expiry);
 
-// ===== LOGIN =====
-document.getElementById("login-form").addEventListener("submit", async e=>{
-  e.preventDefault();
-  const {username,password}=e.target;
-  try{
-    const res = await fetch(`${API}/login`,{
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({username:username.value,password:password.value})
-    });
-    const data = await res.json();
-    if(data.token){ 
-      localStorage.setItem("token", data.token);
-      showIPTV();
-    } else alert(data.error || "Login failed");
-  } catch(err){ alert("Server error"); }
-});
+          showSuccess(data.expiry);
+        } else {
+          errorMsg.classList.remove("hidden");
+          errorMsg.innerText = data.error;
+        }
+      } catch (err) {
+        errorMsg.classList.remove("hidden");
+        errorMsg.innerText = "Server error. Try again.";
+      }
+    }
 
-// ===== REGISTER =====
-document.getElementById("register-form").addEventListener("submit", async e=>{
-  e.preventDefault();
-  const {username,password,confirm}=e.target;
-  if(password.value !== confirm.value){ alert("Passwords do not match"); return; }
-  try{
-    const res = await fetch(`${API}/register`,{
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({username:username.value,password:password.value})
-    });
-    const data = await res.json();
-    if(data.message){ alert(data.message); showForm("login"); }
-    else alert(data.error || "Registration failed");
-  } catch(err){ alert("Server error"); }
-});
+    function showSuccess(expiry) {
+      document.getElementById("loginCard").classList.add("hidden");
+      document.getElementById("successCard").classList.remove("hidden");
 
-// ===== FORGOT PASSWORD =====
-document.getElementById("forgot-form").addEventListener("submit", async e=>{
-  e.preventDefault();
-  const {username}=e.target;
-  try{
-    const res = await fetch(`${API}/forgot`,{
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({username:username.value})
-    });
-    const data = await res.json();
-    if(data.message) alert(data.message);
-    else alert(data.error || "Failed to reset password");
-  } catch(err){ alert("Server error"); }
-});
-</script>
+      expiryTime = expiry;
+      startCountdown();
+    }
 
+    function startCountdown() {
+      clearInterval(countdownInterval);
+      countdownInterval = setInterval(() => {
+        const now = Date.now();
+        const distance = expiryTime - now;
+
+        if (distance <= 0) {
+          clearInterval(countdownInterval);
+          document.getElementById("countdown").innerText = "Expired";
+
+          // Clear storage on expiry
+          localStorage.removeItem("token");
+          localStorage.removeItem("expiry");
+
+          // Show login again
+          document.getElementById("successCard").classList.add("hidden");
+          document.getElementById("loginCard").classList.remove("hidden");
+          return;
+        }
+
+        const hours = Math.floor((distance / (1000 * 60 * 60)) % 24);
+        const minutes = Math.floor((distance / (1000 * 60)) % 60);
+        const seconds = Math.floor((distance / 1000) % 60);
+
+        document.getElementById("countdown").innerText = `${hours}h ${minutes}m ${seconds}s`;
+      }, 1000);
+    }
+
+    function logout() {
+      // Clear storage and reset UI
+      localStorage.removeItem("token");
+      localStorage.removeItem("expiry");
+      clearInterval(countdownInterval);
+
+      document.getElementById("successCard").classList.add("hidden");
+      document.getElementById("loginCard").classList.remove("hidden");
+      document.getElementById("tokenInput").value = "";
+    }
+
+    // Restore session if still valid
+    window.onload = () => {
+      const savedToken = localStorage.getItem("token");
+      const savedExpiry = localStorage.getItem("expiry");
+
+      if (savedToken && savedExpiry) {
+        const now = Date.now();
+        if (now < parseInt(savedExpiry)) {
+          showSuccess(parseInt(savedExpiry));
+        } else {
+          localStorage.removeItem("token");
+          localStorage.removeItem("expiry");
+        }
+      }
+    };
+  </script>
 </body>
 </html>

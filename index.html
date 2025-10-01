@@ -124,12 +124,23 @@ document.getElementById("login-form").addEventListener("submit", async e => {
 
   if (data.token) {
     localStorage.setItem("token", data.token);
-    // ✅ Redirect to actual IPTV page
-    window.location.href = "/iptv.html";
-  } else {
+    window.location.href = "/iptv.html"; // redirect immediately
+} else {
     alert(data.error || "Login failed");
-  }
-});
+}
+<div id="iptv-content" style="display:none;">
+  <h2>Welcome to IPTV</h2>
+  <p>Streaming your content...</p>
+  <button onclick="logout()">Logout</button>
+</div>
+
+<script>
+function logout() {
+    localStorage.removeItem("token");
+    window.location.href = "/";
+}
+</script>
+
 
 
 // Register
@@ -168,4 +179,5 @@ function logout() {
 </script>
 </body>
 </html>
+
 

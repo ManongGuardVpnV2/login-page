@@ -119,15 +119,18 @@ document.getElementById("login-form").addEventListener("submit", async e => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: username.value, password: password.value })
   });
+
   const data = await res.json();
 
   if (data.token) {
     localStorage.setItem("token", data.token);
-    verifyToken(); // show dashboard
+    // ✅ Redirect to actual IPTV page
+    window.location.href = "/iptv.html";
   } else {
     alert(data.error || "Login failed");
   }
 });
+
 
 // Register
 document.getElementById("register-form").addEventListener("submit", async e => {
@@ -165,3 +168,4 @@ function logout() {
 </script>
 </body>
 </html>
+

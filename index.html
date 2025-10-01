@@ -64,7 +64,8 @@
 
 <script>
   // 🔹 Use your domain
-  const API = "https://tambaynoodtv.site/api";
+  const API = window.location.origin + "/api";
+
 
   function showForm(type) {
     document.querySelectorAll("form").forEach(f => f.classList.remove("active"));
@@ -142,3 +143,4 @@
 </script>
 </body>
 </html>
+

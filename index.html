@@ -34,7 +34,50 @@
   <script>
     let expiryTime;
     let countdownInterval;
+    let cryptoKey; // session encryption key
 
+    // --- Encryption helpers ---
+    async function generateKey() {
+      cryptoKey = await crypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    async function encryptData(data) {
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(data);
+      const iv = crypto.getRandomValues(new Uint8Array(12)); // random IV
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        cryptoKey,
+        encoded
+      );
+      // Store IV with ciphertext (Base64)
+      return btoa(JSON.stringify({
+        iv: Array.from(iv),
+        data: Array.from(new Uint8Array(ciphertext))
+      }));
+    }
+
+    async function decryptData(base64) {
+      try {
+        const decoded = JSON.parse(atob(base64));
+        const iv = new Uint8Array(decoded.iv);
+        const ciphertext = new Uint8Array(decoded.data);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv },
+          cryptoKey,
+          ciphertext
+        );
+        return new TextDecoder().decode(decrypted);
+      } catch {
+        return null; // invalid or tampered
+      }
+    }
+
+    // --- Token validation ---
     async function validateToken() {
       const token = document.getElementById("tokenInput").value;
       const errorMsg = document.getElementById("errorMsg");
@@ -48,7 +91,9 @@
 
         const data = await res.json();
         if (data.success) {
-          localStorage.setItem("token", token);
+          // Encrypt before saving
+          const encryptedToken = await encryptData(token);
+          localStorage.setItem("token", encryptedToken);
           localStorage.setItem("expiry", data.expiry);
 
           showSuccess(data.expiry);
@@ -105,15 +150,23 @@
       document.getElementById("tokenInput").value = "";
     }
 
-    // Restore session if valid
-    window.onload = () => {
+    // --- Restore session ---
+    window.onload = async () => {
+      await generateKey(); // new key each session
+
       const savedToken = localStorage.getItem("token");
       const savedExpiry = localStorage.getItem("expiry");
 
       if (savedToken && savedExpiry) {
         const now = Date.now();
         if (now < parseInt(savedExpiry)) {
-          showSuccess(parseInt(savedExpiry));
+          const decryptedToken = await decryptData(savedToken);
+          if (decryptedToken) {
+            showSuccess(parseInt(savedExpiry));
+          } else {
+            localStorage.removeItem("token");
+            localStorage.removeItem("expiry");
+          }
         } else {
           localStorage.removeItem("token");
           localStorage.removeItem("expiry");

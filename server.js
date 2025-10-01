@@ -6,84 +6,89 @@ const sqlite3 = require("sqlite3");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const fs = require("fs");
-const path = require("path");
 
 const app = express();
-const SECRET = "supersecretkey"; // ⚠️ change in production
+const SECRET = "supersecretkey"; // CHANGE THIS in production
 
-// ---------------- SQLite ----------------
-const DB_FILE = "users.db";
+// Use Render writeable folder for SQLite
+const DB_FILE = "/tmp/users.db";
 const dbExists = fs.existsSync(DB_FILE);
 const db = new sqlite3.Database(DB_FILE);
 
+// Create users table if not exists
 if (!dbExists) {
   db.run(
     "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)",
     (err) => {
       if (err) console.error("Failed to create table:", err);
-      else console.log("✅ Users table created.");
+      else console.log("Users table created.");
     }
   );
 }
 
-// ---------------- Middleware ----------------
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname))); // serve static frontend files
 
-// ---------------- API ----------------
-
-// Register
+// ----------- REGISTER -----------
 app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: "Missing fields" });
+  if (!username || !password)
+    return res.status(400).json({ error: "Missing fields" });
 
-  const hashed = await bcrypt.hash(password, 10);
-  db.run(
-    "INSERT INTO users (username, password) VALUES (?, ?)",
-    [username, hashed],
-    function (err) {
-      if (err) return res.status(400).json({ error: "User already exists" });
-      res.json({ message: "Registered successfully" });
-    }
-  );
+  try {
+    const hashed = await bcrypt.hash(password, 10);
+    db.run(
+      "INSERT INTO users (username, password) VALUES (?, ?)",
+      [username, hashed],
+      function (err) {
+        if (err) {
+          console.error("Register error:", err.message);
+          return res.status(400).json({ error: "User already exists" });
+        }
+        res.json({ message: "Registered successfully" });
+      }
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-// Login
+// ----------- LOGIN -----------
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
   db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
+    if (err) return res.status(500).json({ error: "DB error" });
     if (!user) return res.status(400).json({ error: "Invalid username" });
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ error: "Invalid password" });
 
-    const token = jwt.sign(
-      { id: user.id, username: user.username },
-      SECRET,
-      { expiresIn: "24h" }
-    );
+    const token = jwt.sign({ id: user.id, username: user.username }, SECRET, {
+      expiresIn: "24h",
+    });
     res.json({ message: "Login successful", token });
   });
 });
 
-// Forgot password
+// ----------- FORGOT PASSWORD (simple demo) -----------
 app.post("/api/forgot", (req, res) => {
   const { username } = req.body;
-  const newPass = "new123"; // ⚠️ replace with email reset in production
+  const newPass = "new123"; // In production, send email
   bcrypt.hash(newPass, 10).then((hashed) => {
     db.run(
       "UPDATE users SET password = ? WHERE username = ?",
       [hashed, username],
       function (err) {
-        if (err || this.changes === 0) return res.status(400).json({ error: "User not found" });
-        res.json({ message: `Password reset. Temporary password: ${newPass}` });
+        if (err || this.changes === 0)
+          return res.status(400).json({ error: "User not found" });
+        res.json({ message: `Password reset. Temporary: ${newPass}` });
       }
     );
   });
 });
 
-// Middleware: JWT check
+// ----------- JWT AUTH MIDDLEWARE -----------
 function authenticate(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -96,25 +101,14 @@ function authenticate(req, res, next) {
   });
 }
 
-// Protected dashboard
+// ----------- DASHBOARD (protected) -----------
 app.get("/api/dashboard", authenticate, (req, res) => {
   res.json({
     message: `Welcome ${req.user.username}!`,
-    secretData: "🔒 This is protected content only you can see."
+    secretData: "🔒 This is protected content.",
   });
 });
 
-// ---------------- Serve Frontend ----------------
-app.get("*", (req, res) => {
-  if (!req.path.startsWith("/api")) {
-    res.sendFile(path.join(__dirname, "index.html"));
-  }
-});
-
-// ---------------- Start Server ----------------
-const PORT = process.env.PORT || 3000; // 3000 is for localhost dev
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
-
-
+// ----------- RENDER PORT -----------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));

@@ -6,25 +6,42 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-let tokens = {}; // use a DB or Redis in production
+let tokens = {}; // In production use Redis or DB
 
-// Generate token securely (this should be triggered by admin or system logic)
 function createToken() {
-  const token = crypto.randomBytes(3).toString("hex"); // 6-char hex
+  const token = crypto.randomBytes(16).toString("hex"); // 32-char token
   const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
   tokens[token] = expiry;
   return { token, expiry };
 }
 
-// Example: admin or system calls this to issue a token
-// DO NOT expose this endpoint to public users in production
+function refreshToken(oldToken) {
+  if (!tokens[oldToken]) return null;
+
+  const expiry = tokens[oldToken];
+  if (Date.now() > expiry) {
+    delete tokens[oldToken];
+    return null;
+  }
+
+  // Issue new token with fresh expiry
+  const newToken = crypto.randomBytes(16).toString("hex");
+  const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
+  delete tokens[oldToken];
+  tokens[newToken] = newExpiry;
+
+  return { token: newToken, expiry: newExpiry };
+}
+
+// --- API Routes ---
+
+// Admin generates token (send via email/SMS in real life)
 app.post("/admin/create-token", (req, res) => {
   const { token, expiry } = createToken();
-  // In production, send token via email/SMS
-  res.json({ message: "Token generated and sent securely", expiry });
+  res.json({ token, expiry }); // ⚠️ in production, don't expose token in response
 });
 
-// User validation
+// User validates token
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
   if (!tokens[token]) {
@@ -40,4 +57,17 @@ app.post("/validate-token", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-app.listen(3000, () => console.log("✅ Secure server running on http://localhost:3000"));
+// Refresh endpoint
+app.post("/refresh-token", (req, res) => {
+  const { token } = req.body;
+  const refreshed = refreshToken(token);
+
+  if (!refreshed) {
+    return res.status(400).json({ success: false, error: "Cannot refresh" });
+  }
+
+  res.json({ success: true, ...refreshed });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));

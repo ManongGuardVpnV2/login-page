@@ -98,18 +98,26 @@
     }
   }
 
+  
   // Login
-  document.getElementById("login-form").addEventListener("submit", async e => {
-    e.preventDefault();
-    const { username, password } = e.target;
-    const res = await fetch(`${API}/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.value, password: password.value }),
-    });
-    const data = await res.json();
-    if (data.token) { localStorage.setItem("token", data.token); loadDashboard(); }
-    else alert(data.error || "Login failed");
+document.getElementById("login-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const { username, password } = e.target;
+  const res = await fetch(`${API}/login`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: username.value, password: password.value }),
   });
+  const data = await res.json();
+
+  if (data.token) { 
+    localStorage.setItem("token", data.token);
+    // ✅ Redirect to your IPTV site
+    window.location.href = "https://tambaynoodtv.site";
+  } else {
+    alert(data.error || "Login failed");
+  }
+});
+
 
   // Register
   document.getElementById("register-form").addEventListener("submit", async e => {
@@ -142,7 +150,16 @@
     showForm("login");
   }
 </script>
+  <script>
+  const token = localStorage.getItem("token");
+  if (!token) {
+    // No token? Kick back to login page
+    window.location.href = "/"; 
+  }
+</script>
+
 </body>
 </html>
+
 
 

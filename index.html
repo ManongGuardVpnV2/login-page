@@ -7,54 +7,22 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="flex items-center justify-center min-h-screen bg-gray-100">
-  <!-- Login Card -->
   <div id="loginCard" class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
     <h2 class="text-2xl font-bold text-center mb-4">Enter Access Token</h2>
-
     <input id="tokenInput" type="password" placeholder="Enter token" 
       class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-
     <button onclick="validateToken()" 
       class="w-full mt-4 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">
       Login
     </button>
-
-    <button onclick="getToken()" 
-      class="w-full mt-2 bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg">
-      Get Token (Demo)
-    </button>
-
     <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
-    <p id="demoToken" class="text-xs text-gray-600 mt-2"></p>
-  </div>
-
-  <!-- Success Card -->
-  <div id="successCard" class="hidden w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">
-    <h2 class="text-2xl font-bold mb-4">Access Granted ✅</h2>
-    <p class="mb-2">Your token is valid for the next:</p>
-    <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
-
-    <button onclick="logout()" 
-      class="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg">
-      Logout
-    </button>
   </div>
 
   <script>
-    let expiryTime;
-    let countdownInterval;
-    let refreshTimeout;
-
-    async function getToken() {
-      const res = await fetch("/get-token");
-      const data = await res.json();
-      document.getElementById("demoToken").innerText = "Demo token: " + data.token;
-      document.getElementById("tokenInput").value = data.token;
-    }
-
     async function validateToken() {
       const token = document.getElementById("tokenInput").value;
       const errorMsg = document.getElementById("errorMsg");
+      errorMsg.classList.add("hidden");
 
       try {
         const res = await fetch("/validate-token", {
@@ -62,104 +30,32 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token })
         });
-
         const data = await res.json();
         if (data.success) {
           localStorage.setItem("token", token);
           localStorage.setItem("expiry", data.expiry);
-          showSuccess(token, data.expiry);
+
+          // Redirect to IPTV page on success
+          window.location.href = "https://tambaynoodtv.site/";
         } else {
-          errorMsg.classList.remove("hidden");
           errorMsg.innerText = data.error;
+          errorMsg.classList.remove("hidden");
         }
       } catch {
-        errorMsg.classList.remove("hidden");
         errorMsg.innerText = "Server error. Try again.";
+        errorMsg.classList.remove("hidden");
       }
     }
 
-    function showSuccess(token, expiry) {
-      document.getElementById("loginCard").classList.add("hidden");
-      document.getElementById("successCard").classList.remove("hidden");
-
-      expiryTime = expiry;
-      startCountdown(token);
-    }
-
-    function startCountdown(token) {
-      clearInterval(countdownInterval);
-      clearTimeout(refreshTimeout);
-
-      countdownInterval = setInterval(() => {
-        const now = Date.now();
-        const distance = expiryTime - now;
-
-        if (distance <= 0) {
-          clearInterval(countdownInterval);
-          document.getElementById("countdown").innerText = "Expired";
-          logout();
-          return;
-        }
-
-        const hours = Math.floor((distance / (1000 * 60 * 60)) % 24);
-        const minutes = Math.floor((distance / (1000 * 60)) % 60);
-        const seconds = Math.floor((distance / 1000) % 60);
-
-        document.getElementById("countdown").innerText = `${hours}h ${minutes}m ${seconds}s`;
-      }, 1000);
-
-      // auto-refresh 30 min before expiry
-      const refreshIn = expiryTime - Date.now() - (30 * 60 * 1000);
-      if (refreshIn > 0) {
-        refreshTimeout = setTimeout(() => refreshToken(token), refreshIn);
-      }
-    }
-
-    async function refreshToken(oldToken) {
-      try {
-        const res = await fetch("/refresh-token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: oldToken })
-        });
-
-        const data = await res.json();
-        if (data.success) {
-          localStorage.setItem("token", data.token);
-          localStorage.setItem("expiry", data.expiry);
-          showSuccess(data.token, data.expiry);
-        } else {
-          logout();
-        }
-      } catch {
-        logout();
-      }
-    }
-
-    function logout() {
-      localStorage.removeItem("token");
-      localStorage.removeItem("expiry");
-      clearInterval(countdownInterval);
-      clearTimeout(refreshTimeout);
-
-      document.getElementById("successCard").classList.add("hidden");
-      document.getElementById("loginCard").classList.remove("hidden");
-      document.getElementById("tokenInput").value = "";
-      document.getElementById("demoToken").innerText = "";
-    }
-
-    // Restore session on reload
+    // Auto-restore session and redirect if still valid
     window.onload = () => {
-      const savedToken = localStorage.getItem("token");
-      const savedExpiry = localStorage.getItem("expiry");
-
-      if (savedToken && savedExpiry) {
-        const now = Date.now();
-        if (now < parseInt(savedExpiry)) {
-          showSuccess(savedToken, parseInt(savedExpiry));
-        } else {
-          logout();
-        }
+      const token = localStorage.getItem("token");
+      const expiry = localStorage.getItem("expiry");
+      if (token && expiry && Date.now() < parseInt(expiry)) {
+        window.location.href = "https://tambaynoodtv.site/";
+      } else {
+        localStorage.removeItem("token");
+        localStorage.removeItem("expiry");
       }
     };
   </script>

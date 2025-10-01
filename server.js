@@ -1,4 +1,4 @@
-// server.js (CommonJS, persistent SQLite, serve frontend)
+// server.js
 const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
@@ -9,34 +9,34 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-const SECRET = "supersecretkey"; // ⚠️ replace in production
+const SECRET = "supersecretkey"; // ⚠️ change in production
 
-// Use file-based SQLite database
+// ---------------- SQLite ----------------
 const DB_FILE = "users.db";
 const dbExists = fs.existsSync(DB_FILE);
 const db = new sqlite3.Database(DB_FILE);
 
-// Create users table if it doesn't exist
 if (!dbExists) {
   db.run(
     "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)",
     (err) => {
       if (err) console.error("Failed to create table:", err);
-      else console.log("Users table created successfully.");
+      else console.log("✅ Users table created.");
     }
   );
 }
 
+// ---------------- Middleware ----------------
 app.use(cors());
 app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname))); // serve static frontend files
 
-// ----------------- API ROUTES -----------------
+// ---------------- API ----------------
 
 // Register
 app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password)
-    return res.status(400).json({ error: "Missing fields" });
+  if (!username || !password) return res.status(400).json({ error: "Missing fields" });
 
   const hashed = await bcrypt.hash(password, 10);
   db.run(
@@ -52,43 +52,38 @@ app.post("/api/register", async (req, res) => {
 // Login
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
-  db.get(
-    "SELECT * FROM users WHERE username = ?",
-    [username],
-    async (err, user) => {
-      if (!user) return res.status(400).json({ error: "Invalid username" });
+  db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
+    if (!user) return res.status(400).json({ error: "Invalid username" });
 
-      const match = await bcrypt.compare(password, user.password);
-      if (!match) return res.status(400).json({ error: "Invalid password" });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ error: "Invalid password" });
 
-      const token = jwt.sign(
-        { id: user.id, username: user.username },
-        SECRET,
-        { expiresIn: "24h" }
-      );
-      res.json({ message: "Login successful", token });
-    }
-  );
+    const token = jwt.sign(
+      { id: user.id, username: user.username },
+      SECRET,
+      { expiresIn: "24h" }
+    );
+    res.json({ message: "Login successful", token });
+  });
 });
 
 // Forgot password
 app.post("/api/forgot", (req, res) => {
   const { username } = req.body;
-  const newPass = "new123"; // ⚠️ replace in production
+  const newPass = "new123"; // ⚠️ replace with email reset in production
   bcrypt.hash(newPass, 10).then((hashed) => {
     db.run(
       "UPDATE users SET password = ? WHERE username = ?",
       [hashed, username],
       function (err) {
-        if (err || this.changes === 0)
-          return res.status(400).json({ error: "User not found" });
+        if (err || this.changes === 0) return res.status(400).json({ error: "User not found" });
         res.json({ message: `Password reset. Temporary password: ${newPass}` });
       }
     );
   });
 });
 
-// Middleware: check JWT
+// Middleware: JWT check
 function authenticate(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -105,37 +100,17 @@ function authenticate(req, res, next) {
 app.get("/api/dashboard", authenticate, (req, res) => {
   res.json({
     message: `Welcome ${req.user.username}!`,
-    secretData: "🔒 This is protected content only you can see.",
+    secretData: "🔒 This is protected content only you can see."
   });
 });
 
-// ----------------- SERVE FRONTEND -----------------
-
-// Serve static files (index.html, CSS, JS)
-app.use(express.static(path.join(__dirname)));
-
-// For any non-API route, serve index.html
+// ---------------- Serve Frontend ----------------
 app.get("*", (req, res) => {
   if (!req.path.startsWith("/api")) {
     res.sendFile(path.join(__dirname, "index.html"));
   }
 });
 
-// ----------------- START SERVER -----------------
+// ---------------- Start Server ----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
-
-const path = require("path");
-
-// Serve static frontend files
-app.use(express.static(path.join(__dirname)));
-
-// For any non-API route, send index.html
-app.get("*", (req, res) => {
-  if (!req.path.startsWith("/api")) {
-    res.sendFile(path.join(__dirname, "index.html"));
-  }
-});
-
-
-

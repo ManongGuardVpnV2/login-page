@@ -6,19 +6,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-let tokens = {}; // replace with DB/Redis in production
+let tokens = {}; // use a DB or Redis in production
 
-// Generate a token (in real use, send via email/SMS, not directly in response)
-app.post("/generate-token", (req, res) => {
+// Generate token securely (this should be triggered by admin or system logic)
+function createToken() {
   const token = crypto.randomBytes(3).toString("hex"); // 6-char hex
-  const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24h
+  const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
   tokens[token] = expiry;
+  return { token, expiry };
+}
 
-  // For demo we return it directly
-  res.json({ token, expiry });
+// Example: admin or system calls this to issue a token
+// DO NOT expose this endpoint to public users in production
+app.post("/admin/create-token", (req, res) => {
+  const { token, expiry } = createToken();
+  // In production, send token via email/SMS
+  res.json({ message: "Token generated and sent securely", expiry });
 });
 
-// Validate token
+// User validation
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
   if (!tokens[token]) {
@@ -34,4 +40,4 @@ app.post("/validate-token", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-app.listen(3000, () => console.log("✅ Server running on http://localhost:3000"));
+app.listen(3000, () => console.log("✅ Secure server running on http://localhost:3000"));

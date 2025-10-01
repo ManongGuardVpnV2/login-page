@@ -12,35 +12,34 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public"))); // serve frontend
 
-let tokens = {}; // in production use DB or Redis
+let tokens = {}; // use DB or Redis in production
 
+// Create new token
 function createToken() {
-  const token = crypto.randomBytes(16).toString("hex"); // secure token
+  const token = crypto.randomBytes(16).toString("hex"); // 32 chars
   const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24h
   tokens[token] = expiry;
   return { token, expiry };
 }
 
+// Refresh token
 function refreshToken(oldToken) {
   if (!tokens[oldToken]) return null;
   const expiry = tokens[oldToken];
-
   if (Date.now() > expiry) {
     delete tokens[oldToken];
     return null;
   }
-
   const newToken = crypto.randomBytes(16).toString("hex");
   const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
   delete tokens[oldToken];
   tokens[newToken] = newExpiry;
-
   return { token: newToken, expiry: newExpiry };
 }
 
 // --- API Routes ---
 
-// Demo: issue a new token (in real life, send via email/SMS)
+// Demo: issue token (admin only in production)
 app.get("/get-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
@@ -68,10 +67,15 @@ app.post("/refresh-token", (req, res) => {
   res.json({ success: true, ...refreshed });
 });
 
-// Serve frontend fallback (index.html)
+// Admin page (for generating tokens)
+app.get("/admin", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/admin.html"));
+});
+
+// Fallback serve frontend
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(path.join(__dirname, "public/index.html"));
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ App running at http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));

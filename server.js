@@ -6,59 +6,58 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-let tokens = {}; // Production: replace with DB or Redis
+let tokens = {}; // token: expiry
+let usedTokens = new Set(); // to invalidate tokens after use
 
-// Generate new token
+// Generate a new token for user
 function createToken() {
-  const token = crypto.randomBytes(16).toString("hex"); // 32 chars
+  const token = crypto.randomBytes(16).toString("hex");
   const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24h
   tokens[token] = expiry;
   return { token, expiry };
 }
 
-// Refresh token
-function refreshToken(oldToken) {
-  if (!tokens[oldToken]) return null;
-  if (Date.now() > tokens[oldToken]) {
-    delete tokens[oldToken];
-    return null;
-  }
-  const newToken = crypto.randomBytes(16).toString("hex");
-  const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
-  delete tokens[oldToken];
-  tokens[newToken] = newExpiry;
-  return { token: newToken, expiry: newExpiry };
-}
-
 // Validate token
 function validateToken(token) {
-  if (!tokens[token]) return null;
+  if (!tokens[token]) return false;
   if (Date.now() > tokens[token]) {
     delete tokens[token];
-    return null;
+    return false;
   }
-  return { token, expiry: tokens[token] };
+  if (usedTokens.has(token)) return false; // already used
+  return true;
+}
+
+// Mark token as used
+function useToken(token) {
+  usedTokens.add(token);
+  delete tokens[token];
 }
 
 // --- API Routes ---
 
-// Generate token for first login
+// Generate token
 app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
 });
 
-// Validate and refresh token
+// Validate token
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
-  const valid = validateToken(token);
-  if (!valid) return res.status(400).json({ success: false, error: "Invalid or expired token" });
+  if (!validateToken(token)) return res.status(400).json({ success: false, error: "Invalid or expired token" });
 
-  // Refresh token automatically
-  const refreshed = refreshToken(token);
-  if (!refreshed) return res.status(400).json({ success: false, error: "Cannot refresh" });
+  useToken(token); // token is one-time-use
+  res.json({ success: true, expiry: Date.now() + 24*60*60*1000 });
+});
 
-  res.json({ success: true, token: refreshed.token, expiry: refreshed.expiry });
+// Proxy access to IPTV (requires token)
+app.get("/iptv", (req, res) => {
+  const token = req.query.token;
+  if (!validateToken(token)) return res.redirect("/"); // invalid token → back to login
+
+  useToken(token); // invalidate after use
+  res.redirect("https://tambaynoodtv.site/"); // redirect to real IPTV
 });
 
 // Serve login page dynamically
@@ -120,10 +119,12 @@ document.getElementById("loginBtn").onclick = async () => {
     });
     const data = await res.json();
     if (data.success) {
-      currentToken = data.token;
-      localStorage.setItem("token", data.token);
-      localStorage.setItem("expiry", data.expiry);
+      currentToken = token;
+      localStorage.setItem("token", token);
+      localStorage.setItem("expiry", Date.now() + 24*60*60*1000);
       showSuccess(data.expiry);
+      // Redirect via /iptv route with token query
+      window.location.href = "/iptv?token=" + token;
     } else {
       errorMsg.innerText = data.error;
       errorMsg.classList.remove("hidden");
@@ -140,9 +141,6 @@ function showSuccess(expiry) {
 
   expiryTime = expiry;
   startCountdown();
-
-  // Redirect immediately to IPTV
-  window.location.href = "https://tambaynoodtv.site/";
 }
 
 function startCountdown() {
@@ -160,42 +158,21 @@ function startCountdown() {
       return;
     }
 
-    const hours = Math.floor((distance / (1000 * 60 * 60)) % 24);
-    const minutes = Math.floor((distance / (1000 * 60)) % 60);
+    const hours = Math.floor((distance / (1000*60*60)) % 24);
+    const minutes = Math.floor((distance / (1000*60)) % 60);
     const seconds = Math.floor((distance / 1000) % 60);
     document.getElementById("countdown").innerText = \`\${hours}h \${minutes}m \${seconds}s\`;
   }, 1000);
 }
 
-// Restore session on reload and auto-refresh token
-window.onload = async () => {
+// Restore session on reload
+window.onload = () => {
   const token = localStorage.getItem("token");
   const expiry = localStorage.getItem("expiry");
-
-  if (token && expiry && Date.now() < parseInt(expiry)) {
-    try {
-      const res = await fetch("/validate-token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      });
-      const data = await res.json();
-      if (data.success) {
-        currentToken = data.token;
-        localStorage.setItem("token", data.token);
-        localStorage.setItem("expiry", data.expiry);
-        showSuccess(data.expiry);
-      } else {
-        localStorage.removeItem("token");
-        localStorage.removeItem("expiry");
-      }
-    } catch {
-      localStorage.removeItem("token");
-      localStorage.removeItem("expiry");
-    }
-  } else {
+  if (!token || !expiry || Date.now() > parseInt(expiry)) {
     localStorage.removeItem("token");
     localStorage.removeItem("expiry");
+    return;
   }
 };
 </script>

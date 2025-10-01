@@ -17,13 +17,6 @@
       Login
     </button>
     <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
-
-    <!-- For demo: request new token -->
-    <button onclick="requestToken()" 
-      class="w-full mt-4 bg-gray-700 hover:bg-gray-800 text-white font-semibold py-2 px-4 rounded-lg">
-      Generate New Token (Demo)
-    </button>
-    <p id="demoToken" class="mt-2 text-xs text-gray-500"></p>
   </div>
 
   <!-- Success Card -->
@@ -42,12 +35,6 @@
     let expiryTime;
     let countdownInterval;
 
-    async function requestToken() {
-      const res = await fetch("http://localhost:3000/generate-token", { method: "POST" });
-      const data = await res.json();
-      document.getElementById("demoToken").innerText = "Demo Token: " + data.token;
-    }
-
     async function validateToken() {
       const token = document.getElementById("tokenInput").value;
       const errorMsg = document.getElementById("errorMsg");
@@ -61,7 +48,6 @@
 
         const data = await res.json();
         if (data.success) {
-          // Save in localStorage
           localStorage.setItem("token", token);
           localStorage.setItem("expiry", data.expiry);
 
@@ -93,12 +79,9 @@
         if (distance <= 0) {
           clearInterval(countdownInterval);
           document.getElementById("countdown").innerText = "Expired";
-
-          // Clear storage on expiry
           localStorage.removeItem("token");
           localStorage.removeItem("expiry");
 
-          // Show login again
           document.getElementById("successCard").classList.add("hidden");
           document.getElementById("loginCard").classList.remove("hidden");
           return;
@@ -113,7 +96,6 @@
     }
 
     function logout() {
-      // Clear storage and reset UI
       localStorage.removeItem("token");
       localStorage.removeItem("expiry");
       clearInterval(countdownInterval);
@@ -123,7 +105,7 @@
       document.getElementById("tokenInput").value = "";
     }
 
-    // Restore session if still valid
+    // Restore session if valid
     window.onload = () => {
       const savedToken = localStorage.getItem("token");
       const savedExpiry = localStorage.getItem("expiry");

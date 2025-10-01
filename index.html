@@ -1,73 +1,203 @@
-import express from "express";
-import crypto from "crypto";
-import cors from "cors";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Token Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="flex items-center justify-center min-h-screen bg-gray-100">
+  <!-- Login Card -->
+  <div id="loginCard" class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
+    <h2 class="text-2xl font-bold text-center mb-4">Enter Access Token</h2>
+    <input id="tokenInput" type="password" placeholder="Enter token" 
+      class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+    <button onclick="validateToken()" 
+      class="w-full mt-4 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">
+      Login
+    </button>
+    <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
+  </div>
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+  <!-- Success Card -->
+  <div id="successCard" class="hidden w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">
+    <h2 class="text-2xl font-bold mb-4">Access Granted ✅</h2>
+    <p class="mb-2">Your token is valid for the next:</p>
+    <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
 
-let tokens = {}; // In production use Redis or DB
+    <button onclick="logout()" 
+      class="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg">
+      Logout
+    </button>
+  </div>
 
-function createToken() {
-  const token = crypto.randomBytes(16).toString("hex"); // 32-char token
-  const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
-  tokens[token] = expiry;
-  return { token, expiry };
-}
+  <script>
+    let expiryTime;
+    let countdownInterval;
+    let refreshTimeout;
+    let cryptoKey;
 
-function refreshToken(oldToken) {
-  if (!tokens[oldToken]) return null;
+    // --- Encryption helpers ---
+    async function generateKey() {
+      cryptoKey = await crypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt", "decrypt"]
+      );
+    }
 
-  const expiry = tokens[oldToken];
-  if (Date.now() > expiry) {
-    delete tokens[oldToken];
-    return null;
-  }
+    async function encryptData(data) {
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(data);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        cryptoKey,
+        encoded
+      );
+      return btoa(JSON.stringify({
+        iv: Array.from(iv),
+        data: Array.from(new Uint8Array(ciphertext))
+      }));
+    }
 
-  // Issue new token with fresh expiry
-  const newToken = crypto.randomBytes(16).toString("hex");
-  const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
-  delete tokens[oldToken];
-  tokens[newToken] = newExpiry;
+    async function decryptData(base64) {
+      try {
+        const decoded = JSON.parse(atob(base64));
+        const iv = new Uint8Array(decoded.iv);
+        const ciphertext = new Uint8Array(decoded.data);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv },
+          cryptoKey,
+          ciphertext
+        );
+        return new TextDecoder().decode(decrypted);
+      } catch {
+        return null;
+      }
+    }
 
-  return { token: newToken, expiry: newExpiry };
-}
+    // --- Auth Flow ---
+    async function validateToken() {
+      const token = document.getElementById("tokenInput").value;
+      const errorMsg = document.getElementById("errorMsg");
 
-// --- API Routes ---
+      try {
+        const res = await fetch("/validate-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
 
-// Admin generates token (send via email/SMS in real life)
-app.post("/admin/create-token", (req, res) => {
-  const { token, expiry } = createToken();
-  res.json({ token, expiry }); // ⚠️ in production, don't expose token in response
-});
+        const data = await res.json();
+        if (data.success) {
+          const encryptedToken = await encryptData(token);
+          localStorage.setItem("token", encryptedToken);
+          localStorage.setItem("expiry", data.expiry);
 
-// User validates token
-app.post("/validate-token", (req, res) => {
-  const { token } = req.body;
-  if (!tokens[token]) {
-    return res.status(400).json({ success: false, error: "Invalid token" });
-  }
+          showSuccess(token, data.expiry);
+        } else {
+          errorMsg.classList.remove("hidden");
+          errorMsg.innerText = data.error;
+        }
+      } catch {
+        errorMsg.classList.remove("hidden");
+        errorMsg.innerText = "Server error. Try again.";
+      }
+    }
 
-  const expiry = tokens[token];
-  if (Date.now() > expiry) {
-    delete tokens[token];
-    return res.status(400).json({ success: false, error: "Token expired" });
-  }
+    function showSuccess(token, expiry) {
+      document.getElementById("loginCard").classList.add("hidden");
+      document.getElementById("successCard").classList.remove("hidden");
 
-  res.json({ success: true, expiry });
-});
+      expiryTime = expiry;
+      startCountdown(token);
+    }
 
-// Refresh endpoint
-app.post("/refresh-token", (req, res) => {
-  const { token } = req.body;
-  const refreshed = refreshToken(token);
+    function startCountdown(token) {
+      clearInterval(countdownInterval);
+      clearTimeout(refreshTimeout);
 
-  if (!refreshed) {
-    return res.status(400).json({ success: false, error: "Cannot refresh" });
-  }
+      countdownInterval = setInterval(() => {
+        const now = Date.now();
+        const distance = expiryTime - now;
 
-  res.json({ success: true, ...refreshed });
-});
+        if (distance <= 0) {
+          clearInterval(countdownInterval);
+          document.getElementById("countdown").innerText = "Expired";
+          logout();
+          return;
+        }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
+        const hours = Math.floor((distance / (1000 * 60 * 60)) % 24);
+        const minutes = Math.floor((distance / (1000 * 60)) % 60);
+        const seconds = Math.floor((distance / 1000) % 60);
+
+        document.getElementById("countdown").innerText = `${hours}h ${minutes}m ${seconds}s`;
+      }, 1000);
+
+      // Auto-refresh 30 minutes before expiry
+      const refreshIn = expiryTime - Date.now() - (30 * 60 * 1000);
+      if (refreshIn > 0) {
+        refreshTimeout = setTimeout(() => refreshToken(token), refreshIn);
+      }
+    }
+
+    async function refreshToken(oldToken) {
+      try {
+        const res = await fetch("/refresh-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: oldToken })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          const encryptedToken = await encryptData(data.token);
+          localStorage.setItem("token", encryptedToken);
+          localStorage.setItem("expiry", data.expiry);
+
+          showSuccess(data.token, data.expiry);
+        } else {
+          logout();
+        }
+      } catch {
+        logout();
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem("token");
+      localStorage.removeItem("expiry");
+      clearInterval(countdownInterval);
+      clearTimeout(refreshTimeout);
+
+      document.getElementById("successCard").classList.add("hidden");
+      document.getElementById("loginCard").classList.remove("hidden");
+      document.getElementById("tokenInput").value = "";
+    }
+
+    // --- Restore session ---
+    window.onload = async () => {
+      await generateKey();
+
+      const savedToken = localStorage.getItem("token");
+      const savedExpiry = localStorage.getItem("expiry");
+
+      if (savedToken && savedExpiry) {
+        const now = Date.now();
+        if (now < parseInt(savedExpiry)) {
+          const decryptedToken = await decryptData(savedToken);
+          if (decryptedToken) {
+            showSuccess(decryptedToken, parseInt(savedExpiry));
+          } else {
+            logout();
+          }
+        } else {
+          logout();
+        }
+      }
+    };
+  </script>
+</body>
+</html>

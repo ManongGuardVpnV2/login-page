@@ -56,7 +56,7 @@ button:hover{background:#1d4ed8;}
 </div>
 
 <script>
-const API = "https://login-page-1djf.onrender.com/api"; // <-- YOUR BACKEND URL
+const API = "https://welcome-boy.onrender.com/api"; // <-- Replace with your Render URL
 
 function showForm(type){
   document.querySelectorAll("form").forEach(f=>f.classList.remove("active"));
@@ -64,13 +64,14 @@ function showForm(type){
   document.getElementById("form-title").innerText = type.charAt(0).toUpperCase()+type.slice(1);
 }
 
-// On page load, check token
+// Check token on load
 window.onload = ()=>{ 
   const token = localStorage.getItem("token");
   if(token) loadDashboard();
   else document.getElementById("auth-box").style.display="block";
 };
 
+// Load dashboard
 async function loadDashboard(){
   const token = localStorage.getItem("token");
   if(!token) return showForm("login");
@@ -87,7 +88,15 @@ async function loadDashboard(){
   } catch(e){ alert("Server error"); }
 }
 
-// Login
+// Logout
+function logout(){
+  localStorage.removeItem("token");
+  document.getElementById("dashboard").style.display="none";
+  document.getElementById("auth-box").style.display="block";
+  showForm("login");
+}
+
+// Login form
 document.getElementById("login-form").addEventListener("submit", async e=>{
   e.preventDefault();
   const {username,password}=e.target;
@@ -97,6 +106,45 @@ document.getElementById("login-form").addEventListener("submit", async e=>{
       body: JSON.stringify({username:username.value,password:password.value})
     });
     const data = await res.json();
-    if(data.token){ localStorage.setItem("token",data.token); loadDashboard(); }
+    if(data.token){ 
+      localStorage.setItem("token",data.token); 
+      loadDashboard(); 
+    }
     else alert(data.error||"Login failed");
   } catch(e){ alert("Server error"); }
+});
+
+// Register form
+document.getElementById("register-form").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const {username,password,confirm}=e.target;
+  if(password.value!==confirm.value){ alert("Passwords do not match"); return; }
+  try{
+    const res = await fetch(`${API}/register`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username:username.value,password:password.value})
+    });
+    const data = await res.json();
+    if(data.message){ alert(data.message); showForm("login"); }
+    else alert(data.error||"Registration failed");
+  } catch(e){ alert("Server error"); }
+});
+
+// Forgot password
+document.getElementById("forgot-form").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const {username} = e.target;
+  try{
+    const res = await fetch(`${API}/forgot`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username:username.value})
+    });
+    const data = await res.json();
+    if(data.message) alert(data.message);
+    else alert(data.error||"Failed to reset password");
+  } catch(e){ alert("Server error"); }
+});
+</script>
+
+</body>
+</html>

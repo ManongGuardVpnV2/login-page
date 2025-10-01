@@ -1,178 +1,73 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Secure Token Login</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="flex items-center justify-center min-h-screen bg-gray-100">
-  <!-- Login Card -->
-  <div id="loginCard" class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
-    <h2 class="text-2xl font-bold text-center mb-4">Enter Access Token</h2>
-    <input id="tokenInput" type="password" placeholder="Enter token" 
-      class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-    <button onclick="validateToken()" 
-      class="w-full mt-4 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">
-      Login
-    </button>
-    <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
-  </div>
+import express from "express";
+import crypto from "crypto";
+import cors from "cors";
 
-  <!-- Success Card -->
-  <div id="successCard" class="hidden w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">
-    <h2 class="text-2xl font-bold mb-4">Access Granted ✅</h2>
-    <p class="mb-2">Your token is valid for the next:</p>
-    <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-    <button onclick="logout()" 
-      class="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg">
-      Logout
-    </button>
-  </div>
+let tokens = {}; // In production use Redis or DB
 
-  <script>
-    let expiryTime;
-    let countdownInterval;
-    let cryptoKey; // session encryption key
+function createToken() {
+  const token = crypto.randomBytes(16).toString("hex"); // 32-char token
+  const expiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  tokens[token] = expiry;
+  return { token, expiry };
+}
 
-    // --- Encryption helpers ---
-    async function generateKey() {
-      cryptoKey = await crypto.subtle.generateKey(
-        { name: "AES-GCM", length: 256 },
-        true,
-        ["encrypt", "decrypt"]
-      );
-    }
+function refreshToken(oldToken) {
+  if (!tokens[oldToken]) return null;
 
-    async function encryptData(data) {
-      const encoder = new TextEncoder();
-      const encoded = encoder.encode(data);
-      const iv = crypto.getRandomValues(new Uint8Array(12)); // random IV
-      const ciphertext = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv },
-        cryptoKey,
-        encoded
-      );
-      // Store IV with ciphertext (Base64)
-      return btoa(JSON.stringify({
-        iv: Array.from(iv),
-        data: Array.from(new Uint8Array(ciphertext))
-      }));
-    }
+  const expiry = tokens[oldToken];
+  if (Date.now() > expiry) {
+    delete tokens[oldToken];
+    return null;
+  }
 
-    async function decryptData(base64) {
-      try {
-        const decoded = JSON.parse(atob(base64));
-        const iv = new Uint8Array(decoded.iv);
-        const ciphertext = new Uint8Array(decoded.data);
-        const decrypted = await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv },
-          cryptoKey,
-          ciphertext
-        );
-        return new TextDecoder().decode(decrypted);
-      } catch {
-        return null; // invalid or tampered
-      }
-    }
+  // Issue new token with fresh expiry
+  const newToken = crypto.randomBytes(16).toString("hex");
+  const newExpiry = Date.now() + 24 * 60 * 60 * 1000;
+  delete tokens[oldToken];
+  tokens[newToken] = newExpiry;
 
-    // --- Token validation ---
-    async function validateToken() {
-      const token = document.getElementById("tokenInput").value;
-      const errorMsg = document.getElementById("errorMsg");
+  return { token: newToken, expiry: newExpiry };
+}
 
-      try {
-        const res = await fetch("http://localhost:3000/validate-token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token })
-        });
+// --- API Routes ---
 
-        const data = await res.json();
-        if (data.success) {
-          // Encrypt before saving
-          const encryptedToken = await encryptData(token);
-          localStorage.setItem("token", encryptedToken);
-          localStorage.setItem("expiry", data.expiry);
+// Admin generates token (send via email/SMS in real life)
+app.post("/admin/create-token", (req, res) => {
+  const { token, expiry } = createToken();
+  res.json({ token, expiry }); // ⚠️ in production, don't expose token in response
+});
 
-          showSuccess(data.expiry);
-        } else {
-          errorMsg.classList.remove("hidden");
-          errorMsg.innerText = data.error;
-        }
-      } catch (err) {
-        errorMsg.classList.remove("hidden");
-        errorMsg.innerText = "Server error. Try again.";
-      }
-    }
+// User validates token
+app.post("/validate-token", (req, res) => {
+  const { token } = req.body;
+  if (!tokens[token]) {
+    return res.status(400).json({ success: false, error: "Invalid token" });
+  }
 
-    function showSuccess(expiry) {
-      document.getElementById("loginCard").classList.add("hidden");
-      document.getElementById("successCard").classList.remove("hidden");
+  const expiry = tokens[token];
+  if (Date.now() > expiry) {
+    delete tokens[token];
+    return res.status(400).json({ success: false, error: "Token expired" });
+  }
 
-      expiryTime = expiry;
-      startCountdown();
-    }
+  res.json({ success: true, expiry });
+});
 
-    function startCountdown() {
-      clearInterval(countdownInterval);
-      countdownInterval = setInterval(() => {
-        const now = Date.now();
-        const distance = expiryTime - now;
+// Refresh endpoint
+app.post("/refresh-token", (req, res) => {
+  const { token } = req.body;
+  const refreshed = refreshToken(token);
 
-        if (distance <= 0) {
-          clearInterval(countdownInterval);
-          document.getElementById("countdown").innerText = "Expired";
-          localStorage.removeItem("token");
-          localStorage.removeItem("expiry");
+  if (!refreshed) {
+    return res.status(400).json({ success: false, error: "Cannot refresh" });
+  }
 
-          document.getElementById("successCard").classList.add("hidden");
-          document.getElementById("loginCard").classList.remove("hidden");
-          return;
-        }
+  res.json({ success: true, ...refreshed });
+});
 
-        const hours = Math.floor((distance / (1000 * 60 * 60)) % 24);
-        const minutes = Math.floor((distance / (1000 * 60)) % 60);
-        const seconds = Math.floor((distance / 1000) % 60);
-
-        document.getElementById("countdown").innerText = `${hours}h ${minutes}m ${seconds}s`;
-      }, 1000);
-    }
-
-    function logout() {
-      localStorage.removeItem("token");
-      localStorage.removeItem("expiry");
-      clearInterval(countdownInterval);
-
-      document.getElementById("successCard").classList.add("hidden");
-      document.getElementById("loginCard").classList.remove("hidden");
-      document.getElementById("tokenInput").value = "";
-    }
-
-    // --- Restore session ---
-    window.onload = async () => {
-      await generateKey(); // new key each session
-
-      const savedToken = localStorage.getItem("token");
-      const savedExpiry = localStorage.getItem("expiry");
-
-      if (savedToken && savedExpiry) {
-        const now = Date.now();
-        if (now < parseInt(savedExpiry)) {
-          const decryptedToken = await decryptData(savedToken);
-          if (decryptedToken) {
-            showSuccess(parseInt(savedExpiry));
-          } else {
-            localStorage.removeItem("token");
-            localStorage.removeItem("expiry");
-          }
-        } else {
-          localStorage.removeItem("token");
-          localStorage.removeItem("expiry");
-        }
-      }
-    };
-  </script>
-</body>
-</html>
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));

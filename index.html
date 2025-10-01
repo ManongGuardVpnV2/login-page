@@ -117,11 +117,7 @@ document.getElementById("login-form").addEventListener("submit", async e => {
     alert(data.error || "Login failed");
   }
 });
-   const token = localStorage.getItem("token");
-  if (!token) {
-    // No token? Kick back to login page
-    window.location.href = "/"; 
-  }
+ 
 
 
   // Register
@@ -159,6 +155,7 @@ document.getElementById("login-form").addEventListener("submit", async e => {
 
 </body>
 </html>
+
 
 
 

@@ -5,12 +5,14 @@ const app = express();
 app.use(express.json());
 
 const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24h
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1h
 
 let tokens = {};       // token: expiry
 let sessions = {};     // sessionId: expiry
 let usedTokens = new Set();
 
-// Generate token
+// --- Helper Functions ---
+
 function createToken() {
   const token = crypto.randomBytes(16).toString("hex");
   const expiry = Date.now() + SESSION_DURATION;
@@ -18,7 +20,6 @@ function createToken() {
   return { token, expiry };
 }
 
-// Validate token
 function validateToken(token) {
   if (!tokens[token]) return false;
   if (Date.now() > tokens[token]) { delete tokens[token]; return false; }
@@ -26,13 +27,11 @@ function validateToken(token) {
   return true;
 }
 
-// Mark token as used
 function useToken(token) {
   usedTokens.add(token);
   delete tokens[token];
 }
 
-// Create session
 function createSession() {
   const sessionId = crypto.randomBytes(16).toString("hex");
   const expiry = Date.now() + SESSION_DURATION;
@@ -40,27 +39,37 @@ function createSession() {
   return { sessionId, expiry };
 }
 
-// Validate session
 function validateSession(sessionId) {
   if (!sessions[sessionId]) return false;
   if (Date.now() > sessions[sessionId]) { delete sessions[sessionId]; return false; }
   return true;
 }
 
-// Refresh session
 function refreshSession(sessionId) {
   if (!sessions[sessionId]) return false;
   sessions[sessionId] = Date.now() + SESSION_DURATION;
   return true;
 }
 
-// Helper to get cookie by name
 function getCookie(req, name) {
   const cookies = req.headers.cookie;
   if (!cookies) return null;
   const match = cookies.split(";").find(c => c.trim().startsWith(name + "="));
   return match ? match.split("=")[1] : null;
 }
+
+// --- Automatic Cleanup ---
+
+function cleanupExpired() {
+  const now = Date.now();
+  for (const t in tokens) if (tokens[t] < now) delete tokens[t];
+  for (const s in sessions) if (sessions[s] < now) delete sessions[s];
+  // Clean usedTokens older than 24h
+  usedTokens = new Set([...usedTokens].filter(token => tokens[token])); 
+}
+
+// Run cleanup every hour
+setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
 // --- Routes ---
 
@@ -72,11 +81,8 @@ app.get("/generate-token", (req, res) => {
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
   if (!validateToken(token)) return res.status(400).json({ success: false, error: "Invalid or expired token" });
-
   useToken(token);
   const { sessionId, expiry } = createSession();
-
-  // Set HTTP-only cookie
   res.setHeader("Set-Cookie", `sessionId=${sessionId}; HttpOnly; Path=/; Max-Age=${SESSION_DURATION/1000}`);
   res.json({ success: true, expiry });
 });
@@ -84,19 +90,17 @@ app.post("/validate-token", (req, res) => {
 app.post("/refresh-session", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.status(400).json({ success: false, error: "No valid session" });
-
   refreshSession(sessionId);
   res.json({ success: true });
 });
 
-// IPTV route protected by session cookie
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
-  if (!sessionId || !validateSession(sessionId)) return res.redirect("/"); // redirect if no session
+  if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
   res.redirect("https://tambaynoodtv.site/");
 });
 
-// Serve login page
+// Login page (HTML omitted for brevity, same as previous version)
 app.get("*", (req, res) => {
   const html = '<!DOCTYPE html>\
 <html lang="en">\
@@ -135,6 +139,7 @@ async function refreshSession(){try{await fetch("/refresh-session",{method:"POST
 </body></html>';
   res.send(html);
 });
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log("✅ Server running on port "+PORT));

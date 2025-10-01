@@ -1,73 +1,107 @@
 import express from "express";
 import crypto from "crypto";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
 
-let tokens = {};
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24h
+
+let tokens = {};       // token: expiry
+let sessions = {};     // sessionId: expiry
 let usedTokens = new Set();
 
 // Generate new token
 function createToken() {
   const token = crypto.randomBytes(16).toString("hex");
-  const expiry = Date.now() + 24 * 60 * 60 * 1000;
+  const expiry = Date.now() + SESSION_DURATION;
   tokens[token] = expiry;
   return { token, expiry };
 }
 
+// Validate token
 function validateToken(token) {
   if (!tokens[token]) return false;
-  if (Date.now() > tokens[token]) { delete tokens[token]; return false; }
+  if (Date.now() > tokens[token]) {
+    delete tokens[token];
+    return false;
+  }
   if (usedTokens.has(token)) return false;
   return true;
 }
 
+// Mark token as used
 function useToken(token) {
   usedTokens.add(token);
   delete tokens[token];
 }
 
-function refreshToken(token) {
-  if (!tokens[token]) return null;
-  if (usedTokens.has(token)) return null;
-  const newExpiry = Date.now() + 24*60*60*1000;
-  tokens[token] = newExpiry;
-  return newExpiry;
+// Create session
+function createSession() {
+  const sessionId = crypto.randomBytes(16).toString("hex");
+  const expiry = Date.now() + SESSION_DURATION;
+  sessions[sessionId] = expiry;
+  return { sessionId, expiry };
 }
 
-// --- Routes ---
+// Validate session
+function validateSession(sessionId) {
+  if (!sessions[sessionId]) return false;
+  if (Date.now() > sessions[sessionId]) {
+    delete sessions[sessionId];
+    return false;
+  }
+  return true;
+}
 
+// Refresh session
+function refreshSession(sessionId) {
+  if (!sessions[sessionId]) return false;
+  sessions[sessionId] = Date.now() + SESSION_DURATION;
+  return true;
+}
+
+// --- API Routes ---
+
+// Generate token
 app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
 });
 
+// Validate token and create session
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
   if (!validateToken(token)) return res.status(400).json({ success: false, error: "Invalid or expired token" });
+
   useToken(token);
-  const newExpiry = Date.now() + 24*60*60*1000;
-  tokens[token] = newExpiry;
-  res.json({ success: true, token, expiry: newExpiry });
+  const { sessionId, expiry } = createSession();
+
+  // Set HTTP-only cookie
+  res.cookie("sessionId", sessionId, { httpOnly: true, maxAge: SESSION_DURATION });
+  res.json({ success: true, expiry });
 });
 
-app.post("/refresh-token", (req, res) => {
-  const { token } = req.body;
-  const newExpiry = refreshToken(token);
-  if (!newExpiry) return res.status(400).json({ success: false, error: "Cannot refresh token" });
-  res.json({ success: true, expiry: newExpiry });
+// Auto-refresh session
+app.post("/refresh-session", (req, res) => {
+  const sessionId = req.cookies.sessionId;
+  if (!sessionId || !validateSession(sessionId)) return res.status(400).json({ success: false, error: "No valid session" });
+
+  refreshSession(sessionId);
+  res.json({ success: true });
 });
 
-// IPTV access route
+// IPTV access route (protected)
 app.get("/iptv", (req, res) => {
-  const token = req.query.token;
-  if (!token || !(token in tokens)) return res.redirect("/"); // redirect if invalid
-  res.redirect("https://tambaynoodtv.site/"); // valid token → IPTV
+  const sessionId = req.cookies.sessionId;
+  if (!sessionId || !validateSession(sessionId)) return res.redirect("/"); // redirect to login
+  res.redirect("https://tambaynoodtv.site/");
 });
 
-// Login page
+// Serve login page
 app.get("*", (req, res) => {
   const html = '<!DOCTYPE html>\
 <html lang="en">\
@@ -95,18 +129,17 @@ app.get("*", (req, res) => {
 <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>\
 </div>\
 <script>\
-let expiryTime; let countdownInterval; let currentToken;\
+let expiryTime; let countdownInterval;\
 document.getElementById("generateBtn").onclick = async () => { const res = await fetch("/generate-token"); const data = await res.json(); document.getElementById("demoToken").innerText="Token: "+data.token; document.getElementById("tokenInput").value=data.token; };\
 document.getElementById("copyBtn").onclick = ()=>{ const val=document.getElementById("tokenInput").value; navigator.clipboard.writeText(val); alert("Token copied!"); };\
-document.getElementById("loginBtn").onclick = async () => { const token=document.getElementById("tokenInput").value; const errorMsg=document.getElementById("errorMsg"); errorMsg.classList.add("hidden"); try { const res=await fetch("/validate-token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})}); const data=await res.json(); if(data.success){ currentToken=data.token; localStorage.setItem("token",data.token); localStorage.setItem("expiry",data.expiry); showSuccess(data.expiry); window.location.href="/iptv?token="+data.token; setInterval(refreshToken,5*60*1000);} else{ errorMsg.innerText=data.error; errorMsg.classList.remove("hidden"); } } catch{ errorMsg.innerText="Server error. Try again."; errorMsg.classList.remove("hidden"); } };\
-function showSuccess(expiry){ document.getElementById("loginCard").classList.add("hidden"); document.getElementById("successCard").classList.remove("hidden"); expiryTime=expiry; startCountdown(); }\
-function startCountdown(){ clearInterval(countdownInterval); countdownInterval=setInterval(()=>{ const now=Date.now(); const distance=expiryTime-now; if(distance<=0){ clearInterval(countdownInterval); alert("Token expired. Returning to login."); localStorage.removeItem("token"); localStorage.removeItem("expiry"); location.reload(); return; } const hours=Math.floor((distance/(1000*60*60))%24); const minutes=Math.floor((distance/(1000*60))%60); const seconds=Math.floor((distance/1000)%60); document.getElementById("countdown").innerText=hours+"h "+minutes+"m "+seconds+"s"; },1000); }\
-async function refreshToken(){ if(!currentToken) return; try{ const res=await fetch("/refresh-token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:currentToken})}); const data=await res.json(); if(data.success){ expiryTime=data.expiry; localStorage.setItem("expiry",expiryTime);} else{ clearInterval(countdownInterval); localStorage.removeItem("token"); localStorage.removeItem("expiry"); location.reload(); } } catch{ clearInterval(countdownInterval); localStorage.removeItem("token"); localStorage.removeItem("expiry"); location.reload(); } }\
-window.onload=()=>{ const token=localStorage.getItem("token"); const expiry=localStorage.getItem("expiry"); if(!token||!expiry||Date.now()>parseInt(expiry)){ localStorage.removeItem("token"); localStorage.removeItem("expiry"); return;} currentToken=token; expiryTime=parseInt(expiry); showSuccess(expiryTime); setInterval(refreshToken,5*60*1000); };\
+document.getElementById("loginBtn").onclick = async () => { const token=document.getElementById("tokenInput").value; const errorMsg=document.getElementById("errorMsg"); errorMsg.classList.add("hidden"); try { const res=await fetch("/validate-token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})}); const data=await res.json(); if(data.success){ expiryTime=data.expiry; showSuccess(); window.location.href="/iptv"; setInterval(refreshSession,5*60*1000);} else{ errorMsg.innerText=data.error; errorMsg.classList.remove("hidden"); } } catch{ errorMsg.innerText="Server error. Try again."; errorMsg.classList.remove("hidden"); } };\
+function showSuccess(){ document.getElementById("loginCard").classList.add("hidden"); document.getElementById("successCard").classList.remove("hidden"); startCountdown(); }\
+function startCountdown(){ clearInterval(countdownInterval); countdownInterval=setInterval(()=>{ const now=Date.now(); const distance=expiryTime-now; if(distance<=0){ clearInterval(countdownInterval); alert("Session expired. Returning to login."); location.reload(); return;} const hours=Math.floor((distance/(1000*60*60))%24); const minutes=Math.floor((distance/(1000*60))%60); const seconds=Math.floor((distance/1000)%60); document.getElementById("countdown").innerText=hours+"h "+minutes+"m "+seconds+"s"; },1000);}\
+async function refreshSession(){ try{ await fetch("/refresh-session",{method:"POST"}); } catch{ location.reload(); } }\
 </script>\
 </body></html>';
   res.send(html);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=>console.log("✅ Server running on port " + PORT));
+app.listen(PORT, ()=>console.log("✅ Server running on port "+PORT));

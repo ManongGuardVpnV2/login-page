@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TambayNoodTV Login</title>
+
+  <!-- PWA / Icons -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="icon" href="/icon-192.png">
+
   <style>
     body { font-family: Arial, sans-serif; background: #f3f4f6;
       display: flex; justify-content: center; align-items: center;
@@ -20,7 +26,6 @@
     .links { text-align: center; margin-top: 10px; }
     .links a { margin: 0 5px; color: #2563eb; text-decoration: none; font-size: 14px; }
     .links a:hover { text-decoration: underline; }
-    #dashboard { display:none; margin-top:20px; }
   </style>
 </head>
 <body>
@@ -55,18 +60,8 @@
     </div>
   </div>
 
-  <!-- Dashboard -->
-  <div id="dashboard">
-    <h2>Dashboard</h2>
-    <p id="dashboard-data">Loading...</p>
-    <button onclick="logout()">Logout</button>
-  </div>
-
 <script>
-  // 🔹 Use your domain
-  const API = "https://login-page-1djf.onrender.com/api";
-
-
+  const API = "https://welcome-boy.onrender.com/api";
 
   function showForm(type) {
     document.querySelectorAll("form").forEach(f => f.classList.remove("active"));
@@ -74,93 +69,77 @@
     document.getElementById("form-title").innerText = type.charAt(0).toUpperCase() + type.slice(1);
   }
 
-  // On load
-  window.onload = () => {
+  // 🔹 Verify token on load
+  async function verifyToken() {
     const token = localStorage.getItem("token");
-    if (token) loadDashboard();
-    else { document.getElementById("auth-box").style.display = "block"; }
-  };
+    if (!token) return; // no token → stay on login page
 
-  async function loadDashboard() {
-    const token = localStorage.getItem("token");
-    if (!token) return showForm("login");
+    try {
+      const res = await fetch(`${API}/dashboard`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
 
-    const res = await fetch(`${API}/dashboard`, { headers: { Authorization: `Bearer ${token}` } });
-    const data = await res.json();
-
-    if (data.error) {
-      alert("Session expired. Please log in again.");
-      logout();
-    } else {
-      document.getElementById("auth-box").style.display = "none";
-      document.getElementById("dashboard").style.display = "block";
-      document.getElementById("dashboard-data").innerText = data.secretData;
+      if (data.error) {
+        localStorage.removeItem("token");
+      } else {
+        // ✅ Token valid → redirect automatically
+        window.location.href = "https://tambaynoodtv.site";
+      }
+    } catch (err) {
+      console.error("Server error:", err);
     }
   }
 
-  
- 
-// Login
-document.getElementById("login-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  const { username, password } = e.target;
-  const res = await fetch(`${API}/login`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: username.value, password: password.value }),
+  window.onload = verifyToken;
+
+  // 🔹 Login
+  document.getElementById("login-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const { username, password } = e.target;
+
+    const res = await fetch(`${API}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username.value, password: password.value })
+    });
+    const data = await res.json();
+
+    if (data.token) {
+      localStorage.setItem("token", data.token);
+      window.location.href = "https://tambaynoodtv.site";
+    } else {
+      alert(data.error || "Login failed");
+    }
   });
-  const data = await res.json();
 
-  if (data.token) { 
-    localStorage.setItem("token", data.token);
-    // ✅ Redirect to your IPTV site
-    window.location.href = "https://tambaynoodtv.site";
-  } else {
-    alert(data.error || "Login failed");
-  }
-});
-
- 
-
-
-  // Register
+  // 🔹 Register
   document.getElementById("register-form").addEventListener("submit", async e => {
     e.preventDefault();
     const { username, password, confirm } = e.target;
     if (password.value !== confirm.value) return alert("Passwords do not match");
+
     const res = await fetch(`${API}/register`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.value, password: password.value }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username.value, password: password.value })
     });
     alert(JSON.stringify(await res.json()));
   });
 
-  // Forgot Password
+  // 🔹 Forgot Password
   document.getElementById("forgot-form").addEventListener("submit", async e => {
     e.preventDefault();
     const { username } = e.target;
+
     const res = await fetch(`${API}/forgot`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: username.value }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username.value })
     });
     alert(JSON.stringify(await res.json()));
   });
 
-  // Logout
-  function logout() {
-    localStorage.removeItem("token");
-    document.getElementById("dashboard").style.display = "none";
-    document.getElementById("auth-box").style.display = "block";
-    showForm("login");
-  }
 </script>
- 
-
 </body>
 </html>
-
-
-
-
-
-
-

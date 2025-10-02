@@ -67,13 +67,11 @@ function cleanupExpired() {
 setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
 // --- API Routes ---
-// Generate token
 app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
 });
 
-// Validate token & create session
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
   if (!validateToken(token)) return res.status(400).json({ success: false, error: "Invalid or expired token" });
@@ -83,7 +81,6 @@ app.post("/validate-token", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// Refresh session
 app.post("/refresh-session", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.status(400).json({ success: false });
@@ -91,7 +88,6 @@ app.post("/refresh-session", (req, res) => {
   res.json({ success: true });
 });
 
-// Check session
 app.get("/check-session", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.status(401).json({ success: false });
@@ -99,17 +95,16 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// --- IPTV HTML Page ---
+// --- IPTV HTML Page (your own page) ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) {
     return res.redirect("/");
   }
 
-  // Load your IPTV HTML file
   let html = fs.readFileSync("./public/myiptv.html", "utf8");
 
-  // Inject countdown bar before </body>
+  // Inject countdown bar
   html = html.replace("</body>", `
     <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
     <script>

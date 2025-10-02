@@ -1,19 +1,20 @@
 import express from "express";
 import crypto from "crypto";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
 
-const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24h
-const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1h
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 
 let tokens = {};       // token: expiry
 let sessions = {};     // sessionId: expiry
 let usedTokens = new Set();
 
-// --- Helper Functions ---
+// --- Helpers ---
 function createToken() {
-  const token = crypto.randomBytes(16).toString("hex");
+  const token = crypto.randomBytes(8).toString("hex");
   const expiry = Date.now() + SESSION_DURATION;
   tokens[token] = expiry;
   return { token, expiry };
@@ -57,16 +58,15 @@ function getCookie(req, name) {
   return match ? match.split("=")[1] : null;
 }
 
-// --- Automatic Cleanup ---
 function cleanupExpired() {
   const now = Date.now();
   for (const t in tokens) if (tokens[t] < now) delete tokens[t];
   for (const s in sessions) if (sessions[s] < now) delete sessions[s];
-  usedTokens = new Set([...usedTokens].filter(token => tokens[token])); 
+  usedTokens = new Set([...usedTokens].filter(token => tokens[token]));
 }
 setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
-// --- Routes ---
+// --- API Routes ---
 // Generate token
 app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
@@ -86,12 +86,12 @@ app.post("/validate-token", (req, res) => {
 // Refresh session
 app.post("/refresh-session", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
-  if (!sessionId || !validateSession(sessionId)) return res.status(400).json({ success: false, error: "No valid session" });
+  if (!sessionId || !validateSession(sessionId)) return res.status(400).json({ success: false });
   refreshSession(sessionId);
   res.json({ success: true });
 });
 
-// Check session (used by IPTV page)
+// Check session
 app.get("/check-session", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.status(401).json({ success: false });
@@ -99,98 +99,68 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// IPTV wrapper page
-// Secure IPTV HTML page
+// --- IPTV HTML Page ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) {
     return res.redirect("/");
   }
 
-  const html = `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <title>My IPTV</title>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <style>
-      body { margin:0; background:black; display:flex; flex-direction:column; height:100vh; }
-      video { width:100%; height:100%; background:black; }
-      #countdownBar { height:40px; background:#1E40AF; color:white; 
-        display:flex; justify-content:center; align-items:center; 
-        font-family:monospace; font-weight:bold; font-size:16px; }
-    </style>
-  </head>
-  <body>
-    <video id="player" controls autoplay></video>
-    <div id="countdownBar">Loading session...</div>
+  // Load your IPTV HTML file
+  let html = fs.readFileSync("./public/myiptv.html", "utf8");
 
+  // Inject countdown bar before </body>
+  html = html.replace("</body>", `
+    <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
     <script>
-    // Load IPTV stream
-    const video = document.getElementById('player');
-    const url = "https://tambaynoodtv.site/"; // replace with your IPTV stream
-    if(Hls.isSupported()){
-      const hls = new Hls();
-      hls.loadSource(url);
-      hls.attachMedia(video);
-    } else if(video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = url;
-    }
-
-    // Countdown
-    let expiryTime;
-    fetch('/check-session').then(r=>r.json()).then(d=>{
-      if(!d.success){location.href='/';return;}
-      expiryTime=d.expiry; startCountdown();
-      setInterval(refreshSession, 5*60*1000);
-    });
-
-    function startCountdown(){
-      setInterval(()=>{
-        const now=Date.now();
-        const dist=expiryTime-now;
-        if(dist<=0){alert("Session expired");location.href='/';return;}
-        const h=Math.floor((dist/(1000*60*60))%24);
-        const m=Math.floor((dist/(1000*60))%60);
-        const s=Math.floor((dist/1000)%60);
-        document.getElementById("countdownBar").innerText="Session expires in: "+h+"h "+m+"m "+s+"s";
-      },1000);
-    }
-
-    async function refreshSession(){
-      await fetch('/refresh-session',{method:'POST'});
-    }
+      let expiryTime;
+      fetch('/check-session').then(r=>r.json()).then(d=>{
+        if(!d.success){location.href='/';return;}
+        expiryTime=d.expiry; startCountdown();
+        setInterval(refreshSession,5*60*1000);
+      });
+      function startCountdown(){
+        setInterval(()=>{
+          const now=Date.now();
+          const dist=expiryTime-now;
+          if(dist<=0){alert("Session expired");location.href='/';return;}
+          const h=Math.floor((dist/(1000*60*60))%24);
+          const m=Math.floor((dist/(1000*60))%60);
+          const s=Math.floor((dist/1000)%60);
+          document.getElementById("countdownBar").innerText="Session expires in: "+h+"h "+m+"m "+s+"s";
+        },1000);
+      }
+      async function refreshSession(){await fetch('/refresh-session',{method:'POST'});}
     </script>
-  </body>
-  </html>`;
+    </body>
+  `);
+
   res.send(html);
 });
 
-
-// Login page
+// --- Login Page ---
 app.get("*", (req, res) => {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Secure Token Login</title>
+<title>Secure IPTV Login</title>
 <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="flex items-center justify-center min-h-screen bg-gray-100">
 <div id="loginCard" class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">
-<h2 class="text-2xl font-bold text-center mb-4">Access IPTV</h2>
-<button id="generateBtn" class="w-full bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg mb-4">Generate Token</button>
-<input id="tokenInput" type="password" placeholder="Enter token" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4">
-<button id="loginBtn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">Login</button>
-<p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
+  <h2 class="text-2xl font-bold text-center mb-4">Access IPTV</h2>
+  <button id="generateBtn" class="w-full bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg mb-4">Generate Token</button>
+  <input id="tokenInput" type="password" placeholder="Enter token" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4">
+  <button id="loginBtn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg">Login</button>
+  <p id="errorMsg" class="text-red-500 text-sm mt-2 hidden"></p>
 </div>
 
 <div id="successCard" class="hidden w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">
-<h2 class="text-2xl font-bold mb-4">Access Granted ✅</h2>
-<p class="mb-2">Redirecting to IPTV...</p>
-<p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
+  <h2 class="text-2xl font-bold mb-4">Access Granted ✅</h2>
+  <p class="mb-2">Redirecting to IPTV...</p>
+  <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
 </div>
 
 <script>
@@ -213,7 +183,6 @@ document.getElementById("loginBtn").onclick=async()=>{
       expiryTime=data.expiry;
       showSuccess();
       setTimeout(()=>{ window.location.href="/iptv"; },2000);
-      setInterval(refreshSession,5*60*1000);
     }else{
       errorMsg.innerText=data.error;
       errorMsg.classList.remove("hidden");
@@ -241,15 +210,11 @@ function startCountdown(){
       location.reload();
       return;
     }
-    const hours=Math.floor((distance/(1000*60*60))%24);
-    const minutes=Math.floor((distance/(1000*60))%60);
-    const seconds=Math.floor((distance/1000)%60);
-    document.getElementById("countdown").innerText=hours+"h "+minutes+"m "+seconds+"s";
+    const h=Math.floor((distance/(1000*60*60))%24);
+    const m=Math.floor((distance/(1000*60))%60);
+    const s=Math.floor((distance/1000)%60);
+    document.getElementById("countdown").innerText=h+"h "+m+"m "+s+"s";
   },1000);
-}
-
-async function refreshSession(){
-  try{await fetch("/refresh-session",{method:"POST"});}catch{location.reload();}
 }
 </script>
 </body>
@@ -259,4 +224,3 @@ async function refreshSession(){
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log("✅ Server running on port "+PORT));
-

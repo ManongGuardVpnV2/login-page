@@ -100,69 +100,73 @@ app.get("/check-session", (req, res) => {
 });
 
 // IPTV wrapper page
+// Secure IPTV HTML page
 app.get("/iptv", (req, res) => {
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IPTV Access</title>
-<style>
-  body, html { margin:0; padding:0; height:100%; display:flex; flex-direction:column; }
-  iframe { flex:1; border:none; width:100%; }
-  #countdownBar { height:40px; background:#1E40AF; color:white; display:flex; justify-content:center; align-items:center; font-family:monospace; font-weight:bold; font-size:16px; }
-</style>
-</head>
-<body>
-<div id="countdownBar">Loading session...</div>
-<iframe id="iptvFrame"></iframe>
+  const sessionId = getCookie(req, "sessionId");
+  if (!sessionId || !validateSession(sessionId)) {
+    return res.redirect("/");
+  }
 
-<script>
-let expiryTime;
+  const html = `
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>My IPTV</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+      body { margin:0; background:black; display:flex; flex-direction:column; height:100vh; }
+      video { width:100%; height:100%; background:black; }
+      #countdownBar { height:40px; background:#1E40AF; color:white; 
+        display:flex; justify-content:center; align-items:center; 
+        font-family:monospace; font-weight:bold; font-size:16px; }
+    </style>
+  </head>
+  <body>
+    <video id="player" controls autoplay></video>
+    <div id="countdownBar">Loading session...</div>
 
-// Check session and get expiry
-fetch('/check-session')
-.then(res => { if(!res.ok){ window.location.href='/'; throw 'No session'; } return res.json(); })
-.then(data => {
-  if(data.success){
-    document.getElementById('iptvFrame').src='https://tambaynoodtv.site/';
-    expiryTime = data.expiry;
-    startCountdown();
-    setInterval(refreshSession, 5*60*1000);
-  } else { window.location.href='/'; }
-})
-.catch(err => console.log(err));
-
-// Countdown
-function startCountdown(){
-  const countdownEl = document.getElementById('countdownBar');
-  setInterval(()=>{
-    const now = Date.now();
-    const distance = expiryTime - now;
-    if(distance <= 0){
-      alert('Session expired. Returning to login.');
-      window.location.href='/';
-      return;
+    <script>
+    // Load IPTV stream
+    const video = document.getElementById('player');
+    const url = "https://tambaynoodtv.site/"; // replace with your IPTV stream
+    if(Hls.isSupported()){
+      const hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(video);
+    } else if(video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = url;
     }
-    const hours = Math.floor((distance/(1000*60*60))%24);
-    const minutes = Math.floor((distance/(1000*60))%60);
-    const seconds = Math.floor((distance/1000)%60);
-    countdownEl.innerText = \`Session expires in: \${hours}h \${minutes}m \${seconds}s\`;
-  },1000);
-}
 
-// Auto-refresh
-async function refreshSession(){
-  try{ 
-    const res = await fetch('/refresh-session',{method:'POST'});
-    if(!res.ok){ window.location.href='/'; }
-  } catch { window.location.href='/'; }
-}
-</script>
-</body>
-</html>`;
+    // Countdown
+    let expiryTime;
+    fetch('/check-session').then(r=>r.json()).then(d=>{
+      if(!d.success){location.href='/';return;}
+      expiryTime=d.expiry; startCountdown();
+      setInterval(refreshSession, 5*60*1000);
+    });
+
+    function startCountdown(){
+      setInterval(()=>{
+        const now=Date.now();
+        const dist=expiryTime-now;
+        if(dist<=0){alert("Session expired");location.href='/';return;}
+        const h=Math.floor((dist/(1000*60*60))%24);
+        const m=Math.floor((dist/(1000*60))%60);
+        const s=Math.floor((dist/1000)%60);
+        document.getElementById("countdownBar").innerText="Session expires in: "+h+"h "+m+"m "+s+"s";
+      },1000);
+    }
+
+    async function refreshSession(){
+      await fetch('/refresh-session',{method:'POST'});
+    }
+    </script>
+  </body>
+  </html>`;
   res.send(html);
 });
+
 
 // Login page
 app.get("*", (req, res) => {
@@ -255,3 +259,4 @@ async function refreshSession(){
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log("✅ Server running on port "+PORT));
+

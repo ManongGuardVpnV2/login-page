@@ -12,7 +12,7 @@ let tokens = {};       // token: expiry
 let sessions = {};     // sessionId: expiry
 let usedTokens = new Set();
 
-// --- Helpers ---
+// Helpers
 function createToken() {
   const token = crypto.randomBytes(8).toString("hex");
   const expiry = Date.now() + SESSION_DURATION;
@@ -66,7 +66,7 @@ function cleanupExpired() {
 }
 setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
-// --- API Routes ---
+// API Routes
 app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
@@ -95,43 +95,45 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// --- IPTV Page ---
+// IPTV Page
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
 
-  let html = fs.readFileSync("./public/myiptv.html", "utf8");
-
-  // Inject countdown bar
-  html = html.replace("</body>", `
-    <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
-    <script>
-      let expiryTime;
-      fetch('/check-session').then(r=>r.json()).then(d=>{
-        if(!d.success){location.href='/';return;}
-        expiryTime=d.expiry; startCountdown();
-        setInterval(refreshSession,5*60*1000);
-      });
-      function startCountdown(){
-        setInterval(()=>{
-          const now=Date.now();
-          const dist=expiryTime-now;
-          if(dist<=0){alert("Session expired");location.href='/';return;}
-          const h=Math.floor((dist/(1000*60*60))%24);
-          const m=Math.floor((dist/(1000*60))%60);
-          const s=Math.floor((dist/1000)%60);
-          document.getElementById("countdownBar").innerText="Session expires in: "+h+"h "+m+"m "+s+"s";
-        },1000);
-      }
-      async function refreshSession(){await fetch('/refresh-session',{method:'POST'});}
-    </script>
-    </body>
-  `);
-
-  res.send(html);
+  try {
+    let html = fs.readFileSync("./public/myiptv.html", "utf8");
+    html = html.replace("</body>", `
+      <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
+      <script>
+        let expiryTime;
+        fetch('/check-session').then(r=>r.json()).then(d=>{
+          if(!d.success){location.href='/';return;}
+          expiryTime=d.expiry; startCountdown();
+          setInterval(refreshSession,5*60*1000);
+        });
+        function startCountdown(){
+          setInterval(()=>{
+            const now=Date.now();
+            const dist=expiryTime-now;
+            if(dist<=0){alert("Session expired");location.href='/';return;}
+            const h=Math.floor((dist/(1000*60*60))%24);
+            const m=Math.floor((dist/(1000*60))%60);
+            const s=Math.floor((dist/1000)%60);
+            document.getElementById("countdownBar").innerText="Session expires in: "+h+"h "+m+"m "+s+"s";
+          },1000);
+        }
+        async function refreshSession(){await fetch('/refresh-session',{method:'POST'});}
+      </script>
+      </body>
+    `);
+    res.send(html);
+  } catch (err) {
+    console.error("Error reading IPTV HTML:", err);
+    res.status(500).send("Internal Server Error: cannot load IPTV page.");
+  }
 });
 
-// --- Login Page ---
+// Login Page
 app.get("*", (req, res) => {
   const html = `<!DOCTYPE html>
 <html lang="en">

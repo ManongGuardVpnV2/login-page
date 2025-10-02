@@ -5,14 +5,14 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24h
-const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1h
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 
-let tokens = {};       // token: expiry
-let sessions = {};     // sessionId: expiry
+let tokens = {};   // token: expiry
+let sessions = {}; // sessionId: expiry
 let usedTokens = new Set();
 
-// Helpers
+// --- Helper Functions ---
 function createToken() {
   const token = crypto.randomBytes(8).toString("hex");
   const expiry = Date.now() + SESSION_DURATION;
@@ -66,7 +66,7 @@ function cleanupExpired() {
 }
 setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
-// API Routes
+// --- API Routes ---
 app.get("/generate-token", (req, res) => {
   const { token, expiry } = createToken();
   res.json({ token, expiry });
@@ -95,13 +95,15 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// IPTV Page
+// --- IPTV Page ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
 
   try {
-    let html = fs.readFileSync("./public/myiptv.html", "utf8");
+    const htmlPath = new URL('./public/myiptv.html', import.meta.url);
+    let html = fs.readFileSync(htmlPath, "utf8");
+
     html = html.replace("</body>", `
       <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
       <script>
@@ -124,8 +126,8 @@ app.get("/iptv", (req, res) => {
         }
         async function refreshSession(){await fetch('/refresh-session',{method:'POST'});}
       </script>
-      </body>
-    `);
+    </body>`);
+
     res.send(html);
   } catch (err) {
     console.error("Error reading IPTV HTML:", err);
@@ -133,7 +135,7 @@ app.get("/iptv", (req, res) => {
   }
 });
 
-// Login Page
+// --- Login Page ---
 app.get("*", (req, res) => {
   const html = `<!DOCTYPE html>
 <html lang="en">

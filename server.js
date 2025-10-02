@@ -5,8 +5,8 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
-const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24h
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1h
 
 let tokens = {};       // token: expiry
 let sessions = {};     // sessionId: expiry
@@ -95,12 +95,10 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// --- IPTV HTML Page (your own page) ---
+// --- IPTV Page ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
-  if (!sessionId || !validateSession(sessionId)) {
-    return res.redirect("/");
-  }
+  if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
 
   let html = fs.readFileSync("./public/myiptv.html", "utf8");
 

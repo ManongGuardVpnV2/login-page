@@ -1,9 +1,18 @@
 import express from "express";
 import crypto from "crypto";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const app = express();
 app.use(express.json());
+
+// Paths
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve static files (channels.json, css, etc.)
+app.use(express.static(path.join(__dirname, "public")));
 
 const TOKEN_DURATION = 60 * 60 * 1000; // 1 hour tokens
 const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours sessions
@@ -67,8 +76,11 @@ function cleanupExpired() {
 }
 setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
-// --- Security headers middleware ---
+// --- Security middleware with CSP nonces ---
 app.use((req, res, next) => {
+  const nonce = crypto.randomBytes(16).toString("base64");
+  res.locals.nonce = nonce; // save nonce for HTML injection
+
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
@@ -76,10 +88,10 @@ app.use((req, res, next) => {
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   res.setHeader("Surrogate-Control", "no-store");
-  // ✅ CSP fix: allow inline scripts
+
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; frame-ancestors 'none';"
+    `default-src 'self'; script-src 'self' 'nonce-${nonce}' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; frame-ancestors 'none';`
   );
   next();
 });
@@ -127,9 +139,10 @@ app.get("/iptv", (req, res) => {
     const htmlPath = new URL('./public/myiptv.html', import.meta.url);
     let html = fs.readFileSync(htmlPath, "utf8");
 
+    // Inject countdown bar with CSP nonce
     html = html.replace("</body>", `
       <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
-      <script>
+      <script nonce="${res.locals.nonce}">
         let expiryTime;
         fetch('/check-session').then(r=>r.json()).then(d=>{
           if(!d.success){location.href='/';return;}
@@ -160,6 +173,7 @@ app.get("/iptv", (req, res) => {
 
 // --- Login Page ---
 app.get("*", (req, res) => {
+  const nonce = res.locals.nonce;
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -183,7 +197,7 @@ app.get("*", (req, res) => {
   <p id="countdown" class="text-xl font-mono font-bold text-blue-600"></p>
 </div>
 
-<script>
+<script nonce="${nonce}">
 let expiryTime; let countdownInterval;
 
 document.getElementById("generateBtn").onclick=async()=>{

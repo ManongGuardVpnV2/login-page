@@ -1,5 +1,7 @@
 // server.js
-// Single-file, no external deps — fixed cookie & fetch credentials to avoid bounce-back.
+// Single-file, no external deps. Token -> login -> session cookie -> protected /iptv and /channels.
+// Place this in project root with public/myiptv.html and optional public/channels.json
+
 import http from "http";
 import fs from "fs";
 import path from "path";
@@ -10,17 +12,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 
-// Config
-const TOKEN_DURATION = 60 * 60 * 1000;        // 1 hour
-const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
-const CLEANUP_INTERVAL = 30 * 60 * 1000;      // 30 minutes
+// ---------- Config ----------
+const TOKEN_DURATION = 60 * 60 * 1000;        // 1 hour token
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hour session
+const CLEANUP_INTERVAL = 30 * 60 * 1000;      // cleanup interval
 
-// In-memory stores
+// ---------- In-memory stores ----------
 let tokens = {};    // token -> expiry
 let sessions = {};  // sessionId -> expiry
 let usedTokens = new Set();
 
-// Helpers
+// Optional: protected channels file path (public/channels.json)
+const channelsFile = path.join(__dirname, "public", "channels.json");
+const fallbackChannels = [
+  { name: "Sample Channel 1", url: "http://example.com/1.m3u8" },
+  { name: "Sample Channel 2", url: "http://example.com/2.m3u8" }
+];
+
+// ---------- Helpers ----------
 const now = () => Date.now();
 
 function createToken() {
@@ -61,7 +70,7 @@ function getCookie(req, name) {
   return null;
 }
 
-// Cleanup expired tokens/sessions periodically
+// periodic cleanup
 setInterval(() => {
   const t = now();
   for (const k in tokens) if (tokens[k] < t) delete tokens[k];
@@ -69,7 +78,6 @@ setInterval(() => {
   usedTokens = new Set([...usedTokens].filter(x => x in tokens));
 }, CLEANUP_INTERVAL);
 
-// Helpers to respond
 function sendJSON(res, code, obj) {
   res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify(obj));
@@ -85,14 +93,7 @@ function serveFile(res, filePath, contentType = "text/html") {
   res.end(data);
 }
 
-// Optional channels file (protected endpoint). If public/channels.json exists, we'll serve it; otherwise sample list.
-const channelsPath = path.join(__dirname, "public", "channels.json");
-const fallbackChannels = [
-  { name: "Sample Channel 1", url: "http://example.com/1.m3u8" },
-  { name: "Sample Channel 2", url: "http://example.com/2.m3u8" }
-];
-
-// HTTP server
+// ---------- HTTP Server ----------
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const method = req.method;
@@ -103,20 +104,20 @@ const server = http.createServer((req, res) => {
     return sendJSON(res, 200, { token: t.token, expiry: t.expiry });
   }
 
-  // POST /validate-token  (login) — IMPORTANT: client must call with credentials:'include'
+  // POST /validate-token  (login)  -- client must call with credentials:'include'
   if (url.pathname === "/validate-token" && method === "POST") {
     let body = "";
-    req.on("data", (c) => (body += c));
+    req.on("data", chunk => body += chunk);
     req.on("end", () => {
       try {
-        const { token } = JSON.parse(body || "{}");
+        const data = JSON.parse(body || "{}");
+        const token = data?.token;
         if (!validateToken(token)) return sendJSON(res, 400, { success: false, error: "Invalid or expired token" });
 
         useToken(token);
         const { sessionId, expiry } = createSession();
 
-        // NOTE: do not set Secure here so local http testing works.
-        // In production behind HTTPS set Secure; and/or set via env flag.
+        // NOTE: no Secure flag so local http testing works. For production behind HTTPS, add "Secure; " to cookie.
         const cookie = `sessionId=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_DURATION / 1000)}`;
         res.setHeader("Set-Cookie", cookie);
 
@@ -128,14 +129,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // GET /check-session  (client fetch must include credentials:'include')
+  // GET /check-session  (client must use credentials:'include')
   if (url.pathname === "/check-session" && method === "GET") {
     const sid = getCookie(req, "sessionId");
     if (!validateSession(sid)) return sendJSON(res, 401, { success: false });
     return sendJSON(res, 200, { success: true, expiry: sessions[sid] });
   }
 
-  // POST /refresh-session  (client fetch must include credentials:'include')
+  // POST /refresh-session  (client must use credentials:'include')
   if (url.pathname === "/refresh-session" && method === "POST") {
     const sid = getCookie(req, "sessionId");
     if (!validateSession(sid)) return sendJSON(res, 400, { success: false });
@@ -148,14 +149,14 @@ const server = http.createServer((req, res) => {
     const sid = getCookie(req, "sessionId");
     if (!validateSession(sid)) return sendJSON(res, 401, { success: false, error: "Unauthorized" });
 
-    if (fs.existsSync(channelsPath)) {
-      return serveFile(res, channelsPath, "application/json");
+    if (fs.existsSync(channelsFile)) {
+      return serveFile(res, channelsFile, "application/json");
     } else {
       return sendJSON(res, 200, fallbackChannels);
     }
   }
 
-  // GET /iptv  — serve your myiptv.html but inject a compact obfuscated script
+  // GET /iptv - serve myiptv.html but inject the countdown/protection script
   if (url.pathname === "/iptv" && method === "GET") {
     const sid = getCookie(req, "sessionId");
     if (!validateSession(sid)) {
@@ -163,16 +164,16 @@ const server = http.createServer((req, res) => {
       return res.end();
     }
 
-    const htmlFile = path.join(__dirname, "public", "myiptv.html");
-    if (!fs.existsSync(htmlFile)) {
+    const htmlPath = path.join(__dirname, "public", "myiptv.html");
+    if (!fs.existsSync(htmlPath)) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       return res.end("myiptv.html not found");
     }
 
-    let html = fs.readFileSync(htmlFile, "utf8");
-
-    // small obfuscated script (array-key technique) — ALL fetches use credentials:'include'
+    let html = fs.readFileSync(htmlPath, "utf8");
     const barId = "sessionBar_" + crypto.randomBytes(3).toString("hex");
+
+    // injected script (compact + array-key obfuscation). ALL fetch calls include credentials:'include'
     const injectedScript = `
 (function(){
   try{
@@ -180,19 +181,19 @@ const server = http.createServer((req, res) => {
     try{ history[_[16]](null,'',location.pathname+location.search); window.addEventListener(_[17],function(){ location.href='/'; }); }catch(e){}
     var B=document[_[0]]('${barId}');
     var E=0;
-    function v(){ return fetch('/'+_[1],{cache:'no-store', [_[18]]:_[19]}).then(function(r){return r[_[2]]();}).catch(function(){return {success:false};}); }
-    function startTick(){ setInterval(function(){ var n=Date.now(),d=E-n; if(!E||d<=0){ try{ alert('Session expired'); }catch(e){} location.href='/'; return; } var h=Math.floor((d/3600000)%24), m=Math.floor((d/60000)%60), s=Math.floor((d/1000)%60); B[_[6]]='Session expires in: '+h+'h '+m+'m '+s+'s'; },1000); }
+    function chk(){ return fetch('/'+_[1],{cache:'no-store', [_[18]]:_[19]}).then(function(r){return r[_[2]]();}).catch(function(){return {success:false};}); }
+    function tick(){ setInterval(function(){ var n=Date.now(),d=E-n; if(!E||d<=0){ try{ alert('Session expired'); }catch(e){} location.href='/'; return; } var h=Math.floor((d/3600000)%24), m=Math.floor((d/60000)%60), s=Math.floor((d/1000)%60); B[_[6]]='Session expires in: '+h+'h '+m+'m '+s+'s'; },1000); }
     async function keep(){ try{ await fetch('/'+_[9],{method:_[10], [_[18]]:_[19]}); }catch(e){} }
-    v().then(function(j){ if(!j[_[4]]){ location.href='/'; return; } E=j[_[5]]; startTick(); setInterval(keep,5*60*1000);
-      // fetch protected channels
+    chk().then(function(j){ if(!j[_[4]]){ location.href='/'; return; } E=j[_[5]]; tick(); setInterval(keep,5*60*1000);
+      // fetch protected channels and hand to page if handler exists
       fetch('/'+_[7],{cache:'no-store', [_[18]]:_[19]}).then(function(r2){ return r2[_[2]](); }).then(function(ch){ try{ if(window.__onProtectedChannels && typeof window.__onProtectedChannels==='function'){ window.__onProtectedChannels(ch); } else { window.protectedChannels = ch; } }catch(e){} }).catch(function(){});
     });
-    // devtools detection (debugger timing)
+    // detect devtools via debugger timing
     setInterval(function(){ var t=Date.now(); debugger; if(Date.now()-t>200){ try{ alert('DevTools detected — returning to login'); }catch(e){} location.href='/'; } },1500);
-    // prevent common shortcuts & right-click
+    // block context menu and common shortcuts
     document.addEventListener(_[11],function(e){ e[_[14]](); });
     document.addEventListener(_[12],function(e){ if(e.key==='F12' || (e.ctrlKey && e.shiftKey && (e.key==='I'||e.key==='J'||e.key==='C')) || (e.ctrlKey && e.key==='U')) e[_[14]](); });
-    if(window[_[13]]!==window[_[15]]){ try{ window.top.location = window.self.location; }catch(e){ location.href='/'; } }
+    if(window[_[13]] !== window[_[15]]){ try{ window.top.location = window.self.location; }catch(e){ location.href='/'; } }
     try{ Object.freeze(window); }catch(e){}
   }catch(err){ try{ console.error('injected err',err);}catch(e){} location.href='/'; }
 })();
@@ -212,31 +213,11 @@ const server = http.createServer((req, res) => {
 
   // GET / or /login -> login page (client uses credentials:'include' on validate)
   if ((url.pathname === "/" || url.pathname === "/login") && method === "GET") {
-    const loginHtml = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>IPTV Login</title>
-  <style>
-    body{font-family:sans-serif;background:#f0f0f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-    .card{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.15);width:360px;text-align:center}
-    input,button{width:100%;padding:10px;margin:8px 0;border-radius:8px;border:1px solid #ccc;box-sizing:border-box}
-    button{background:#007bff;color:#fff;border:none;cursor:pointer}
-    #msg{height:18px;margin-top:6px;font-size:0.95rem}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Access IPTV</h2>
-    <button id="gen">Generate Token</button>
-    <input id="token" type="password" placeholder="Paste token here">
-    <button id="loginBtn">Login</button>
-    <p id="msg"></p>
-  </div>
+    const loginHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login</title>
+<style>body{font-family:sans-serif;background:#f0f0f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0} .card{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.15);width:360px;text-align:center} input,button{width:100%;padding:10px;margin:8px 0;border-radius:8px;border:1px solid #ccc;box-sizing:border-box} button{background:#007bff;color:#fff;border:none;cursor:pointer} #msg{height:18px;margin-top:6px;font-size:0.95rem}</style></head><body><div class="card"><h2>Access IPTV</h2><button id="gen">Generate Token</button><input id="token" type="password" placeholder="Paste token here"><button id="loginBtn">Login</button><p id="msg"></p></div>
 <script>
 (async function(){
-  const gen = document.getElementById('gen'), loginBtn = document.getElementById('loginBtn'), tokenInput = document.getElementById('token'), msg = document.getElementById('msg');
+  const gen=document.getElementById('gen'), loginBtn=document.getElementById('loginBtn'), tokenInput=document.getElementById('token'), msg=document.getElementById('msg');
   gen.addEventListener('click', async ()=> {
     try {
       const r = await fetch('/generate-token');
@@ -244,19 +225,18 @@ const server = http.createServer((req, res) => {
       tokenInput.value = j.token || '';
       msg.style.color='green'; msg.textContent='Token generated';
       try{ await navigator.clipboard.writeText(j.token); }catch(e){}
-    } catch(e) { msg.style.color='red'; msg.textContent='Error'; }
+    } catch (e) { msg.style.color='red'; msg.textContent='Error'; }
   });
 
   loginBtn.addEventListener('click', async ()=> {
     const t = tokenInput.value.trim();
     if (!t) { msg.style.color='red'; msg.textContent='Paste token'; return; }
     try {
-      // MUST include credentials so Set-Cookie is accepted by the browser
       const r = await fetch('/validate-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: t }),
-        credentials: 'include'
+        credentials: 'include' // IMPORTANT so Set-Cookie is accepted
       });
       const j = await r.json();
       if (j.success) {
@@ -270,20 +250,17 @@ const server = http.createServer((req, res) => {
     }
   });
 
-  // basic DevTools deterrent
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('keydown', e => {
     if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J' || e.key === 'C')) || (e.ctrlKey && e.key === 'U')) e.preventDefault();
   });
 })();
-</script>
-</body>
-</html>`;
+</script></body></html>`;
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
     return res.end(loginHtml);
   }
 
-  // Serve static files from public (css/js/json, etc.)
+  // Serve static files from public
   const candidate = path.join(__dirname, "public", url.pathname.replace(/^\/+/, ""));
   if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
     const ext = path.extname(candidate).toLowerCase();
@@ -292,7 +269,7 @@ const server = http.createServer((req, res) => {
     return serveFile(res, candidate, mime);
   }
 
-  // Not found
+  // 404 fallback
   res.writeHead(404, { "Content-Type": "text/plain" });
   res.end("Not found");
 });

@@ -9,15 +9,15 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"))); // serve static assets
+app.use(express.static(path.join(__dirname, "public")));
 
 // --- Token & Session Settings ---
 const TOKEN_DURATION = 60 * 60 * 1000; // 1 hour
 const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 min cleanup
 
-let tokens = {};   // token: expiry
-let sessions = {}; // sessionId: expiry
+let tokens = {};
+let sessions = {};
 let usedTokens = new Set();
 
 // --- Helpers ---
@@ -106,15 +106,68 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// --- Serve IPTV HTML exactly as-is ---
+// --- Serve IPTV HTML with countdown bar injected ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
 
   try {
     const htmlPath = path.join(__dirname, "public", "myiptv.html");
-    const html = fs.readFileSync(htmlPath, "utf8"); // untouched HTML
+    let html = fs.readFileSync(htmlPath, "utf8");
+
+    // Inject countdown bar at bottom with animation
+    html = html.replace("</body>", `
+      <div id="sessionCountdown" style="
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        height: 40px;
+        background: linear-gradient(90deg, #1E40AF 0%, #3B82F6 100%);
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-family: monospace;
+        font-weight: bold;
+        font-size: 16px;
+        z-index: 9999;
+        transition: width 0.5s ease;
+      ">Loading session...</div>
+      <script>
+        (function(){
+          let expiryTime;
+          fetch('/check-session').then(r=>r.json()).then(d=>{
+            if(!d.success){location.href='/'; return;}
+            expiryTime=d.expiry;
+            startCountdown();
+            setInterval(refreshSession, 5*60*1000);
+          });
+          function startCountdown(){
+            const bar = document.getElementById("sessionCountdown");
+            setInterval(()=>{
+              const now=Date.now();
+              const dist=expiryTime-now;
+              if(dist<=0){ alert("Session expired"); location.href='/'; return;}
+              const h=Math.floor((dist/(1000*60*60))%24);
+              const m=Math.floor((dist/(1000*60))%60);
+              const s=Math.floor((dist/1000)%60);
+              bar.innerText = "Session expires in: "+h+"h "+m+"m "+s+"s";
+            },1000);
+          }
+          async function refreshSession(){ await fetch('/refresh-session',{method:'POST'}); }
+
+          // Extra: prevent right click / element inspection
+          document.addEventListener('contextmenu', e => e.preventDefault());
+          document.addEventListener('keydown', e => {
+            if(e.key==='F12' || (e.ctrlKey && e.shiftKey && e.key==='I')) e.preventDefault();
+          });
+        })();
+      </script>
+    </body>`);
+
     res.send(html);
+
   } catch (err) {
     console.error("Error reading IPTV HTML:", err);
     res.status(500).send("Internal Server Error: cannot load IPTV page.");
@@ -154,20 +207,13 @@ document.getElementById("loginBtn").onclick = async () => {
   try {
     const res = await fetch("/validate-token", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ token })
     });
     const data = await res.json();
-    if (data.success) {
-      setTimeout(()=>{ window.location.href="/iptv"; },2000);
-    } else {
-      errorMsg.innerText = data.error;
-      errorMsg.classList.remove("hidden");
-    }
-  } catch {
-    errorMsg.innerText = "Server error. Try again.";
-    errorMsg.classList.remove("hidden");
-  }
+    if(data.success){ setTimeout(()=>{ window.location.href="/iptv"; },2000); }
+    else{ errorMsg.innerText=data.error; errorMsg.classList.remove("hidden"); }
+  } catch { errorMsg.innerText="Server error. Try again."; errorMsg.classList.remove("hidden"); }
 };
 </script>
 </body>

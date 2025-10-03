@@ -96,14 +96,15 @@ app.use((req, res, next) => {
     return res.redirect(`https://${req.headers.host}${req.url}`);
   }
 
-  // Security headers
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "same-origin");
-  // Content Security Policy: allow self only, allow tailwind CDN for the login UI (if used)
-  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; frame-ancestors 'none';");
-  next();
-});
+ // Security headers
+res.setHeader("X-Frame-Options", "DENY");
+res.setHeader("X-Content-Type-Options", "nosniff");
+res.setHeader("Referrer-Policy", "same-origin");
+// CSP - allow inline scripts too (needed for login/iptv injected JS)
+res.setHeader("Content-Security-Policy",
+  "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; frame-ancestors 'none';"
+);
+
 
 // -------------------------
 // API routes
@@ -356,3 +357,4 @@ app.get("*", (req, res) => {
 // -------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log(`✅ Server running on port ${PORT}`));
+

@@ -106,7 +106,7 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// --- Serve IPTV HTML with countdown bar injected ---
+// --- Serve IPTV HTML with enhanced countdown/security ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
@@ -115,53 +115,57 @@ app.get("/iptv", (req, res) => {
     const htmlPath = path.join(__dirname, "public", "myiptv.html");
     let html = fs.readFileSync(htmlPath, "utf8");
 
-    // Inject countdown bar at bottom with animation
+    // Randomize ID for countdown bar to prevent direct targeting
+    const countdownId = "cd_" + crypto.randomBytes(4).toString("hex");
+
     html = html.replace("</body>", `
-      <div id="sessionCountdown" style="
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        height: 40px;
-        background: linear-gradient(90deg, #1E40AF 0%, #3B82F6 100%);
-        color: white;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        font-family: monospace;
-        font-weight: bold;
-        font-size: 16px;
-        z-index: 9999;
-        transition: width 0.5s ease;
+      <div id="${countdownId}" style="
+        position:fixed;bottom:0;left:0;width:100%;height:40px;
+        background:linear-gradient(90deg,#1E40AF 0%,#3B82F6 100%);
+        color:white;display:flex;justify-content:center;align-items:center;
+        font-family:monospace;font-weight:bold;font-size:16px;z-index:9999;
+        transition:width 0.5s ease;
       ">Loading session...</div>
       <script>
         (function(){
+          'use strict';
+          const bar=document.getElementById("${countdownId}");
           let expiryTime;
           fetch('/check-session').then(r=>r.json()).then(d=>{
             if(!d.success){location.href='/'; return;}
             expiryTime=d.expiry;
             startCountdown();
-            setInterval(refreshSession, 5*60*1000);
+            setInterval(refreshSession,5*60*1000);
           });
+
           function startCountdown(){
-            const bar = document.getElementById("sessionCountdown");
             setInterval(()=>{
               const now=Date.now();
               const dist=expiryTime-now;
-              if(dist<=0){ alert("Session expired"); location.href='/'; return;}
+              if(dist<=0){alert("Session expired");location.href='/';return;}
               const h=Math.floor((dist/(1000*60*60))%24);
               const m=Math.floor((dist/(1000*60))%60);
               const s=Math.floor((dist/1000)%60);
-              bar.innerText = "Session expires in: "+h+"h "+m+"m "+s+"s";
+              bar.innerText="Session expires in: "+h+"h "+m+"m "+s+"s";
             },1000);
           }
-          async function refreshSession(){ await fetch('/refresh-session',{method:'POST'}); }
 
-          // Extra: prevent right click / element inspection
-          document.addEventListener('contextmenu', e => e.preventDefault());
-          document.addEventListener('keydown', e => {
-            if(e.key==='F12' || (e.ctrlKey && e.shiftKey && e.key==='I')) e.preventDefault();
+          async function refreshSession(){
+            await fetch('/refresh-session',{method:'POST'});
+          }
+
+          // Disable devtools shortcuts
+          document.addEventListener('contextmenu', e=>e.preventDefault());
+          document.addEventListener('keydown', e=>{
+            if(e.key==='F12'||(e.ctrlKey&&e.shiftKey&&['I','J','C'].includes(e.key))) e.preventDefault();
+            if(e.ctrlKey && e.key==='U') e.preventDefault();
           });
+
+          // Prevent iframe embedding
+          if(window.top !== window.self){ window.top.location = window.self.location; }
+
+          // Obfuscate variables
+          Object.freeze(window);
         })();
       </script>
     </body>`);
@@ -194,26 +198,26 @@ app.get("*", (req, res) => {
 </div>
 
 <script>
-document.getElementById("generateBtn").onclick = async () => {
-  const res = await fetch("/generate-token");
-  const data = await res.json();
-  document.getElementById("tokenInput").value = data.token;
+document.getElementById("generateBtn").onclick=async()=>{
+  const res=await fetch("/generate-token");
+  const data=await res.json();
+  document.getElementById("tokenInput").value=data.token;
 };
 
-document.getElementById("loginBtn").onclick = async () => {
-  const token = document.getElementById("tokenInput").value;
-  const errorMsg = document.getElementById("errorMsg");
+document.getElementById("loginBtn").onclick=async()=>{
+  const token=document.getElementById("tokenInput").value;
+  const errorMsg=document.getElementById("errorMsg");
   errorMsg.classList.add("hidden");
-  try {
-    const res = await fetch("/validate-token", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ token })
+  try{
+    const res=await fetch("/validate-token",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token})
     });
-    const data = await res.json();
+    const data=await res.json();
     if(data.success){ setTimeout(()=>{ window.location.href="/iptv"; },2000); }
     else{ errorMsg.innerText=data.error; errorMsg.classList.remove("hidden"); }
-  } catch { errorMsg.innerText="Server error. Try again."; errorMsg.classList.remove("hidden"); }
+  }catch{ errorMsg.innerText="Server error. Try again."; errorMsg.classList.remove("hidden"); }
 };
 </script>
 </body>

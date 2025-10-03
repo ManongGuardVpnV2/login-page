@@ -11,6 +11,28 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// --- Security Keys ---
+const AES_KEY = crypto.randomBytes(32); // 256-bit key
+const AES_IV = crypto.randomBytes(16);  // 128-bit IV
+
+function encrypt(text) {
+  const cipher = crypto.createCipheriv("aes-256-cbc", AES_KEY, AES_IV);
+  let encrypted = cipher.update(text, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return encrypted;
+}
+
+function decrypt(encrypted) {
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", AES_KEY, AES_IV);
+    let decrypted = decipher.update(encrypted, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+  } catch {
+    return null;
+  }
+}
+
 // --- Token & Session Settings ---
 const TOKEN_DURATION = 60 * 60 * 1000; // 1 hour
 const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
@@ -63,7 +85,6 @@ function getCookie(req, name) {
   return match ? match.split("=")[1] : null;
 }
 
-// Cleanup expired tokens/sessions
 function cleanupExpired() {
   const now = Date.now();
   for (const t in tokens) if (tokens[t] < now) delete tokens[t];
@@ -84,12 +105,13 @@ app.post("/validate-token", (req, res) => {
 
   useToken(token);
   const { sessionId, expiry } = createSession();
+  const encryptedSession = encrypt(sessionId);
 
   res.setHeader("Set-Cookie",
     `sessionId=${sessionId}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${SESSION_DURATION/1000}`
   );
 
-  res.json({ success: true, expiry });
+  res.json({ success: true, expiry, encryptedSession });
 });
 
 app.post("/refresh-session", (req, res) => {
@@ -106,7 +128,7 @@ app.get("/check-session", (req, res) => {
   res.json({ success: true, expiry });
 });
 
-// --- Serve IPTV HTML with enhanced countdown/security ---
+// --- Serve IPTV HTML with encrypted session and countdown ---
 app.get("/iptv", (req, res) => {
   const sessionId = getCookie(req, "sessionId");
   if (!sessionId || !validateSession(sessionId)) return res.redirect("/");
@@ -114,9 +136,8 @@ app.get("/iptv", (req, res) => {
   try {
     const htmlPath = path.join(__dirname, "public", "myiptv.html");
     let html = fs.readFileSync(htmlPath, "utf8");
-
-    // Randomize ID for countdown bar to prevent direct targeting
     const countdownId = "cd_" + crypto.randomBytes(4).toString("hex");
+    const encryptedToken = encrypt(sessionId);
 
     html = html.replace("</body>", `
       <div id="${countdownId}" style="
@@ -128,21 +149,24 @@ app.get("/iptv", (req, res) => {
       ">Loading session...</div>
       <script>
         (function(){
-          'use strict';
           const bar=document.getElementById("${countdownId}");
           let expiryTime;
-          fetch('/check-session').then(r=>r.json()).then(d=>{
-            if(!d.success){location.href='/'; return;}
-            expiryTime=d.expiry;
-            startCountdown();
-            setInterval(refreshSession,5*60*1000);
-          });
+          const encryptedToken="${encryptedToken}";
+          
+          // Verify encrypted token with server
+          fetch('/check-session',{headers:{'Authorization':encryptedToken}})
+            .then(r=>r.json()).then(d=>{
+              if(!d.success){ location.href='/'; return;}
+              expiryTime=d.expiry;
+              startCountdown();
+              setInterval(refreshSession,5*60*1000);
+            });
 
           function startCountdown(){
             setInterval(()=>{
               const now=Date.now();
               const dist=expiryTime-now;
-              if(dist<=0){alert("Session expired");location.href='/';return;}
+              if(dist<=0){ alert("Session expired"); location.href='/'; return;}
               const h=Math.floor((dist/(1000*60*60))%24);
               const m=Math.floor((dist/(1000*60))%60);
               const s=Math.floor((dist/1000)%60);
@@ -154,24 +178,19 @@ app.get("/iptv", (req, res) => {
             await fetch('/refresh-session',{method:'POST'});
           }
 
-          // Disable devtools shortcuts
+          // Prevent devtools and copying
           document.addEventListener('contextmenu', e=>e.preventDefault());
           document.addEventListener('keydown', e=>{
             if(e.key==='F12'||(e.ctrlKey&&e.shiftKey&&['I','J','C'].includes(e.key))) e.preventDefault();
             if(e.ctrlKey && e.key==='U') e.preventDefault();
           });
-
-          // Prevent iframe embedding
           if(window.top !== window.self){ window.top.location = window.self.location; }
-
-          // Obfuscate variables
           Object.freeze(window);
         })();
       </script>
     </body>`);
 
     res.send(html);
-
   } catch (err) {
     console.error("Error reading IPTV HTML:", err);
     res.status(500).send("Internal Server Error: cannot load IPTV page.");

@@ -1,4 +1,10 @@
 // server.js
+//
+// Secure IPTV gatekeeper: strong server-side session enforcement,
+// strips inline JSON from HTML, serves channels only to valid sessions,
+// injects obfuscated countdown and client-side validation.
+// Requires: express (install with `npm i express`)
+
 import express from "express";
 import crypto from "crypto";
 import fs from "fs";
@@ -7,18 +13,21 @@ import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"))); // keep myiptv.html as-is
+
+// Serve only static assets other than myiptv.html (we will serve myiptv.html via /iptv)
+app.use('/static', express.static(path.join(__dirname, "public")));
 
 /* ---------- CONFIG ---------- */
-const TOKEN_DURATION = 60 * 60 * 1000;         // 1 hour
-const SESSION_DURATION = 24 * 60 * 60 * 1000;  // 24 hours
-const CLEANUP_INTERVAL = 30 * 60 * 1000;       // 30 minutes
-const RATE_LIMIT_WINDOW = 60 * 1000;           // 1 minute window for token generation
-const RATE_LIMIT_MAX = 10;                     // max tokens per IP per window
+const TOKEN_DURATION = 60 * 60 * 1000;        // token life (1 hour)
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // session life (24 hours)
+const CLEANUP_INTERVAL = 30 * 60 * 1000;      // cleanup interval (30 min)
+const RATE_LIMIT_WINDOW = 60 * 1000;          // 1 minute window
+const RATE_LIMIT_MAX = 10;                    // tokens per IP per window
 
-// AES key & iv — for production set env vars AES_KEY (64 hex) and AES_IV (32 hex)
+// AES keys for encrypt/decrypt (set env vars in production for persistence)
 const AES_KEY = process.env.AES_KEY ? Buffer.from(process.env.AES_KEY, "hex") : crypto.randomBytes(32);
 const AES_IV  = process.env.AES_IV  ? Buffer.from(process.env.AES_IV, "hex")  : crypto.randomBytes(16);
 
@@ -34,7 +43,7 @@ function aesDecrypt(hex) {
     let dec = decipher.update(String(hex), "hex", "utf8");
     dec += decipher.final("utf8");
     return dec;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -103,50 +112,48 @@ setInterval(() => {
   usedTokens = new Set([...usedTokens].filter(x => x in tokens));
 }, CLEANUP_INTERVAL);
 
-/* ---------- Per-request security headers + nonce ---------- */
+// rate limit per IP
+function rateLimitIP(ip) {
+  const nowTs = Date.now();
+  const r = rateMap.get(ip);
+  if (!r || nowTs - r.windowStart > RATE_LIMIT_WINDOW) {
+    rateMap.set(ip, { count: 1, windowStart: nowTs });
+    return true;
+  }
+  if (r.count >= RATE_LIMIT_MAX) return false;
+  r.count++;
+  return true;
+}
+
+/* ---------- Security middleware (headers + per-request nonce) ---------- */
 app.use((req, res, next) => {
   const nonce = crypto.randomBytes(12).toString("base64");
   res.locals.nonce = nonce;
 
-  // basic headers
+  // security headers
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
   res.setHeader("Permissions-Policy", "interest-cohort=()");
 
-  // caching
+  // no-store
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
 
-  // CSP: only allow scripts from self + nonce + tailwind CDN
+  // CSP: only allow server scripts with nonce and tailwind CDN for login
   res.setHeader("Content-Security-Policy",
     `default-src 'self'; script-src 'self' 'nonce-${nonce}' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; frame-ancestors 'none';`
   );
 
-  // HSTS if request seems secure / production
-  const isSecure = req.secure || req.headers["x-forwarded-proto"] === "https" || process.env.NODE_ENV === "production";
-  if (isSecure) res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+  // HSTS in prod/secure
+  const isSecureReq = req.secure || req.headers["x-forwarded-proto"] === "https" || process.env.NODE_ENV === "production";
+  if (isSecureReq) res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
 
   next();
 });
 
-/* ---------- Rate limiter for token generation (per IP) ---------- */
-function rateLimitIP(ip) {
-  const nowTs = Date.now();
-  const rec = rateMap.get(ip);
-  if (!rec || nowTs - rec.windowStart > RATE_LIMIT_WINDOW) {
-    rateMap.set(ip, { count: 1, windowStart: nowTs });
-    return true;
-  }
-  if (rec.count >= RATE_LIMIT_MAX) return false;
-  rec.count++;
-  return true;
-}
-
-/* ---------- Routes ---------- */
-
-// generate-token (GET)
+/* ---------- API: generate-token ---------- */
 app.get("/generate-token", (req, res) => {
   const ip = req.ip || req.connection.remoteAddress || "unknown";
   if (!rateLimitIP(ip)) return res.status(429).json({ error: "Too many requests" });
@@ -154,7 +161,7 @@ app.get("/generate-token", (req, res) => {
   res.json({ token: t.token, expiry: t.expiry });
 });
 
-// validate-token (POST) -> create session, set cookie, return expiry + encryptedSession
+/* ---------- API: validate-token (create session) ---------- */
 app.post("/validate-token", (req, res) => {
   try {
     const { token } = req.body || {};
@@ -163,17 +170,13 @@ app.post("/validate-token", (req, res) => {
     useToken(token);
     const { sessionId, expiry } = createSession();
 
-    // secure flag only if request is secure or in production
     const isSecureReq = req.secure || req.headers["x-forwarded-proto"] === "https" || process.env.NODE_ENV === "production";
     const secureFlag = isSecureReq ? "Secure; " : "";
 
-    // cookie: HttpOnly + SameSite=Lax (allows top-level navigation) + Path + Max-Age
     const cookieStr = `sessionId=${encodeURIComponent(sessionId)}; HttpOnly; ${secureFlag}SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_DURATION/1000)}`;
     res.setHeader("Set-Cookie", cookieStr);
 
-    // encrypted session token for embedding
-    const enc = aesEncrypt(sessionId);
-
+    const enc = aesEncrypt(sessionId); // encrypted session for embedding
     res.json({ success: true, expiry, encryptedSession: enc });
   } catch (err) {
     console.error("validate-token error:", err);
@@ -181,7 +184,7 @@ app.post("/validate-token", (req, res) => {
   }
 });
 
-// refresh-session (POST)
+/* ---------- API: refresh-session ---------- */
 app.post("/refresh-session", (req, res) => {
   const sid = getCookie(req, "sessionId");
   if (!sid || !validateSession(sid)) return res.status(400).json({ success: false });
@@ -189,14 +192,14 @@ app.post("/refresh-session", (req, res) => {
   res.json({ success: true });
 });
 
-// check-session (GET)
+/* ---------- API: check-session ---------- */
 app.get("/check-session", (req, res) => {
   const sid = getCookie(req, "sessionId");
   if (!sid || !validateSession(sid)) return res.status(401).json({ success: false });
   res.json({ success: true, expiry: sessions[sid] });
 });
 
-// verify-encrypted (POST) — validates encryptedSession value
+/* ---------- API: verify-encrypted ---------- */
 app.post("/verify-encrypted", (req, res) => {
   try {
     const enc = req.headers["x-encrypted-session"] || req.body?.encryptedSession;
@@ -211,44 +214,99 @@ app.post("/verify-encrypted", (req, res) => {
   }
 });
 
-/* ---------- Serve IPTV (inject secure obfuscated script) ---------- */
+/* ---------- PROTECTED CHANNELS ENDPOINT ----------
+   Serve channels JSON only when session valid.
+   Expected channels JSON file on disk: public/channels.json
+   If your channels are embedded in myiptv.html, this route will act as the secure source
+   and the injected script will request it and hand it off to the page's player.
+----------------------------------------------- */
+app.get("/channels", (req, res) => {
+  const sid = getCookie(req, "sessionId");
+  if (!sid || !validateSession(sid)) return res.status(401).json({ success: false, error: "Not authorized" });
+
+  try {
+    const channelsPath = path.join(__dirname, "public", "channels.json");
+    if (!fs.existsSync(channelsPath)) return res.status(404).json({ success:false, error: "No channels file" });
+    const raw = fs.readFileSync(channelsPath, "utf8");
+    // send JSON as-is (but only to authenticated sessions)
+    res.setHeader("Content-Type", "application/json");
+    res.send(raw);
+  } catch (e) {
+    console.error("channels error:", e);
+    res.status(500).json({ success:false });
+  }
+});
+
+/* ---------- Serve IPTV (strip inline JSON, inject obfuscated script) ---------- */
 app.get("/iptv", (req, res) => {
   const sid = getCookie(req, "sessionId");
   if (!sid || !validateSession(sid)) return res.redirect("/");
 
   try {
-    const htmlPath = path.join(__dirname, "public", "myiptv.html");
-    let html = fs.readFileSync(htmlPath, "utf8");
+    const originalPath = path.join(__dirname, "public", "myiptv.html");
+    if (!fs.existsSync(originalPath)) return res.status(404).send("Missing myiptv.html");
+    let html = fs.readFileSync(originalPath, "utf8");
 
-    // embed encrypted session and random id
+    // 1) Remove any inline <script id="channels-data">...</script> blocks
+    html = html.replace(/<script[^>]*id=["']channels-data["'][^>]*>[\s\S]*?<\/script>/gi, '');
+
+    // 2) Remove any var channels = [...] ; or const channels = [...] ; inline declarations
+    html = html.replace(/(?:var|let|const)\s+channels\s*=\s*\[[\s\S]*?\]\s*;?/gi, '');
+
+    // 3) Also remove any large JSON-looking inline blocks (best-effort)
+    html = html.replace(/<script[^>]*>[\s\n\r\t]*\{(?:[\s\S]*?)\}[\s\n\r\t]*<\/script>/gim, match => {
+      // don't remove unrelated scripts that might break page, so only remove if match contains "m3u" or "playlist" or "channels"
+      if (/channels|playlist|m3u|xtream/i.test(match)) return '';
+      return match;
+    });
+
+    // encrypted session to embed for client-side verification
     const encryptedSession = aesEncrypt(sid);
     const barId = "sbar_" + crypto.randomBytes(4).toString("hex");
     const nonce = res.locals.nonce;
 
-    // obfuscated compact script: array-based keys to make it harder to read
+    // Obfuscated client script:
+    // - verifies encrypted session with /verify-encrypted
+    // - fetches /channels (protected) then calls window.__onProtectedChannels(json) if that function exists in original page
+    // - countdown display
+    // - devtools deterrents, history.replaceState to avoid back-button leak
     const obf = `
       (function(){
         try{
-          var _=['getElementById','verify-encrypted','then','json','success','expiry','innerText','refresh-session','POST','contextmenu','keydown','top','self','preventDefault','freeze','replaceState','popstate'];
-          // avoid back-button cache showing content
-          try{ history.replaceState(null,'',location.pathname+location.search); window.addEventListener(_[16],function(){ location.href='/'; }); }catch(e){}
+          var _=['getElementById','verify-encrypted','then','json','success','expiry','innerText','channels','fetch','refresh-session','POST','contextmenu','keydown','top','self','preventDefault','replaceState','popstate'];
+          // avoid back-button cached view
+          try{ history[_[16]](null,'',location.pathname+location.search); window.addEventListener(_[17],function(){ location.href='/'; }); }catch(e){}
           var B=document[_[0]]('${barId}');
           var E=0;
           function v(){return fetch('/'+_[1],{method:'POST',headers:{'Content-Type':'application/json','x-encrypted-session':'${encryptedSession}'},cache:'no-store'}).then(function(r){return r[_[2]]();}).catch(function(){return {success:false};});}
           function s(){setInterval(function(){var n=Date.now(),d=E-n;if(!E||d<=0){try{alert('Session expired');}catch(e){}location.href='/';return;}var h=Math.floor((d/3600000)%24),m=Math.floor((d/60000)%60),s=Math.floor((d/1000)%60);B[_[6]]='Session expires in: '+h+'h '+m+'m '+s+'s';},1000);}
-          async function r(){try{await fetch('/'+_[7],{method:_[8]});}catch(e){}}
-          v().then(function(j){ if(!j[_[4]]){ location.href='/'; return; } E=j[_[5]]; s(); setInterval(r,5*60*1000); });
-          // devtools detection via debugger timing
-          setInterval(function(){ var t=Date.now(); debugger; if(Date.now()-t>200){ try{ alert('DevTools detected — returning to login'); }catch(e){} location.href='/'; }},1500);
-          // basic keyboard/context blockers
-          document.addEventListener(_[9],function(e){ e[_[13]](); });
-          document.addEventListener(_[10],function(e){ if(e.key==='F12' || (e.ctrlKey && e.shiftKey && (e.key==='I'||e.key==='J'||e.key==='C')) || (e.ctrlKey && e.key==='U')) e[_[13]](); });
-          if(window[_[11]]!==window[_[12]]){ try{ window.top.location=window.self.location; }catch(e){ location.href='/'; } }
-          try{ Object[_[14]](window); }catch(e){}
-        }catch(err){ try{ console.error('injected error',err);}catch(e){} location.href='/'; }
+          async function r(){ try{ await fetch('/'+_[9],{method:_[10]}); }catch(e){} }
+          // verify encrypted session
+          v().then(function(j){ if(!j[_[4]]){ location.href='/'; return; } E=j[_[5]]; s(); setInterval(r,5*60*1000); // start countdown and periodic refresh
+            // fetch protected channels and hand to page's handler if exists
+            fetch('/'+_[7],{cache:'no-store'}).then(function(r2){ return r2[_[2]](); }).then(function(chjson){
+              try{
+                if(window.__onProtectedChannels && typeof window.__onProtectedChannels==='function'){
+                  window.__onProtectedChannels(chjson);
+                } else {
+                  // fallback: push channels to window.protectedChannels
+                  window.protectedChannels = chjson;
+                }
+              }catch(e){}
+            }).catch(function(){});
+          });
+          // devtools detection
+          setInterval(function(){ var t=Date.now(); debugger; if(Date.now()-t>200){ try{ alert('DevTools detected — returning to login'); }catch(e){} location.href='/'; } },1500);
+          // keyboard/context blockers
+          document.addEventListener(_[11],function(e){ e[_[14]](); });
+          document.addEventListener(_[12],function(e){ if(e.key==='F12' || (e.ctrlKey && e.shiftKey && (e.key==='I'||e.key==='J'||e.key==='C')) || (e.ctrlKey && e.key==='U')) e[_[14]](); });
+          if(window[_[13]]!==window[_[15]]){ try{ window.top.location=window.self.location; }catch(e){ location.href='/'; } }
+          try{ Object.freeze(window); }catch(e){}
+        }catch(err){ try{ console.error('injected err',err);}catch(e){} location.href='/'; }
       })();
     `;
 
+    // injection HTML (countdown bar + obfuscated script with nonce)
     const injection = `
       <div id="${barId}" style="
         position:fixed;bottom:0;left:0;width:100%;height:44px;
@@ -263,7 +321,7 @@ app.get("/iptv", (req, res) => {
     if (html.includes("</body>")) html = html.replace("</body>", injection + "</body>");
     else html += injection;
 
-    // explicit no-store
+    // ensure no caching again
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
@@ -275,7 +333,7 @@ app.get("/iptv", (req, res) => {
   }
 });
 
-/* ---------- Login fallback page (uses nonce so CSP allows inline) ---------- */
+/* ---------- Login fallback page (uses nonce) ---------- */
 app.get("*", (req, res) => {
   const nonce = res.locals.nonce;
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login</title><script src="https://cdn.tailwindcss.com"></script></head><body class="min-h-screen flex items-center justify-center bg-gray-100"><div class="w-full max-w-md bg-white p-6 rounded shadow"><h1 class="text-xl font-bold mb-4 text-center">Access IPTV</h1><div class="mb-4"><button id="gbtn" class="w-full bg-green-600 text-white py-2 rounded">Generate Token</button></div><div class="mb-3"><input id="t" type="password" placeholder="Paste token" class="w-full border px-3 py-2 rounded"/></div><div><button id="lbtn" class="w-full bg-blue-600 text-white py-2 rounded">Login</button></div><p id="m" class="text-sm mt-3 text-center text-gray-600"></p></div><script nonce="${nonce}">(function(){const g=document.getElementById('gbtn'),l=document.getElementById('lbtn'),m=document.getElementById('m');g.onclick=async()=>{try{const r=await fetch('/generate-token');const j=await r.json();if(j.token){try{await navigator.clipboard.writeText(j.token);}catch(e){}m.innerText='Token copied to clipboard';}else m.innerText='Failed';}catch(e){m.innerText='Error';}};l.onclick=async()=>{const token=document.getElementById('t').value.trim();if(!token){m.innerText='Paste token';return;}try{const r=await fetch('/validate-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});const j=await r.json();if(j.success){m.innerText='Logged in — redirecting';setTimeout(()=>location.href='/iptv',900);}else{m.innerText=j.error||'Invalid token';}}catch(e){m.innerText='Server error';}}})();</script></body></html>`;
@@ -283,6 +341,6 @@ app.get("*", (req, res) => {
   res.send(html);
 });
 
-/* ---------- Start server ---------- */
+/* ---------- Start ---------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));

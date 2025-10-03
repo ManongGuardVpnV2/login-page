@@ -5,17 +5,18 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
-const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+const TOKEN_DURATION = 60 * 60 * 1000; // 1 hour tokens
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours sessions
+const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 min cleanup
 
 let tokens = {};   // token: expiry
 let sessions = {}; // sessionId: expiry
 let usedTokens = new Set();
 
-// --- Helper Functions ---
+// --- Helpers ---
 function createToken() {
   const token = crypto.randomBytes(8).toString("hex");
-  const expiry = Date.now() + SESSION_DURATION;
+  const expiry = Date.now() + TOKEN_DURATION;
   tokens[token] = expiry;
   return { token, expiry };
 }
@@ -62,7 +63,7 @@ function cleanupExpired() {
   const now = Date.now();
   for (const t in tokens) if (tokens[t] < now) delete tokens[t];
   for (const s in sessions) if (sessions[s] < now) delete sessions[s];
-  usedTokens = new Set([...usedTokens].filter(token => tokens[token]));
+  usedTokens = new Set([...usedTokens].filter(t => tokens[t]));
 }
 setInterval(cleanupExpired, CLEANUP_INTERVAL);
 
@@ -75,9 +76,14 @@ app.get("/generate-token", (req, res) => {
 app.post("/validate-token", (req, res) => {
   const { token } = req.body;
   if (!validateToken(token)) return res.status(400).json({ success: false, error: "Invalid or expired token" });
+
   useToken(token);
   const { sessionId, expiry } = createSession();
-  res.setHeader("Set-Cookie", `sessionId=${sessionId}; HttpOnly; Path=/; Max-Age=${SESSION_DURATION/1000}`);
+
+  res.setHeader("Set-Cookie",
+    `sessionId=${sessionId}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${SESSION_DURATION/1000}`
+  );
+
   res.json({ success: true, expiry });
 });
 
@@ -104,6 +110,11 @@ app.get("/iptv", (req, res) => {
     const htmlPath = new URL('./public/myiptv.html', import.meta.url);
     let html = fs.readFileSync(htmlPath, "utf8");
 
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+
     html = html.replace("</body>", `
       <div id="countdownBar" style="height:40px;background:#1E40AF;color:white;display:flex;justify-content:center;align-items:center;font-family:monospace;font-weight:bold;font-size:16px;position:fixed;bottom:0;left:0;right:0;z-index:9999;">Loading session...</div>
       <script>
@@ -111,7 +122,7 @@ app.get("/iptv", (req, res) => {
         fetch('/check-session').then(r=>r.json()).then(d=>{
           if(!d.success){location.href='/';return;}
           expiryTime=d.expiry; startCountdown();
-          setInterval(refreshSession,5*60*1000);
+          setInterval(refreshSession, 5*60*1000);
         });
         function startCountdown(){
           setInterval(()=>{

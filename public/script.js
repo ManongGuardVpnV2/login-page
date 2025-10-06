@@ -1,5 +1,5 @@
 
-
+<script>
     const player = new shaka.Player(document.getElementById('video'));
     const video = document.getElementById('video');
     const playPauseBtn = document.getElementById('playPauseBtn');
@@ -3137,73 +3137,5 @@ document.addEventListener("touchend", endDrag);
 
 window.addEventListener("resize", ()=>{ if(radioPanel.classList.contains("open")) updatePanelPosition(); });
 
+</script>
 
-
-async function loginUser() {
-  const codeInput = document.getElementById("accessCode");
-  const msg = document.getElementById("loginMsg");
-  msg.textContent = "";
-
-  try {
-    const res = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ accessCode: codeInput.value })
-    });
-
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Login failed");
-
-    document.getElementById("loginSection").style.display = "none";
-    document.getElementById("channelsSection").style.display = "block";
-    loadChannels();
-  } catch (err) {
-    msg.textContent = err.message;
-  }
-}
-
-async function logoutUser() {
-  await fetch("/api/logout", { method: "POST", credentials: "include" });
-  document.getElementById("channelsSection").style.display = "none";
-  document.getElementById("loginSection").style.display = "block";
-}
-
-async function loadChannels() {
-  const list = document.getElementById("channelList");
-  list.innerHTML = "<p>Loading...</p>";
-
-  try {
-    const res = await fetch("/api/channels", { credentials: "include" });
-    if (!res.ok) {
-      if (res.status === 401) {
-        logoutUser();
-        alert("Session expired. Please log in again.");
-        return;
-      }
-      throw new Error("Failed to load channels");
-    }
-
-    const channels = await res.json();
-    list.innerHTML = "";
-
-    channels.forEach((ch) => {
-      const div = document.createElement("div");
-      div.className = "channel-card";
-      div.innerHTML = `
-        <img src="${ch.logo}" alt="${ch.name}" class="channel-logo">
-        <h3>${ch.name}</h3>
-        <p>${ch.category}</p>
-        <a href="${ch.manifestUri}" target="_blank" class="watch-btn">▶ Watch</a>
-      `;
-      list.appendChild(div);
-    });
-  } catch (err) {
-    list.innerHTML = `<p>Error: ${err.message}</p>`;
-  }
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("loginBtn").addEventListener("click", loginUser);
-  document.getElementById("logoutBtn").addEventListener("click", logoutUser);
-});

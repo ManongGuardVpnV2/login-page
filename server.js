@@ -5,6 +5,8 @@ const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 
 const app = express();
+
+// Use Render-provided port
 const PORT = process.env.PORT || 3000;
 
 // Token settings
@@ -16,14 +18,14 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.static("public"));
 
-// Load channels
+// === Helper to load channels ===
 function loadChannels() {
   const file = path.join(__dirname, "data", "channels.json");
   if (!fs.existsSync(file)) return [];
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-// Middleware to verify token
+// === Auth middleware ===
 function authMiddleware(req, res, next) {
   const token = req.cookies[TOKEN_NAME];
   if (!token) return res.status(401).json({ error: "No token" });
@@ -38,13 +40,9 @@ function authMiddleware(req, res, next) {
 }
 
 // === Routes ===
-
-// Generate token (no password needed)
 app.post("/api/login", (req, res) => {
   const { accessCode } = req.body;
-
-  // Optional: simple shared code for minimal protection
-  if (accessCode !== process.env.ACCESS_CODE && process.env.ACCESS_CODE) {
+  if (process.env.ACCESS_CODE && accessCode !== process.env.ACCESS_CODE) {
     return res.status(403).json({ error: "Invalid access code" });
   }
 
@@ -54,24 +52,29 @@ app.post("/api/login", (req, res) => {
 
   res.cookie(TOKEN_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: true,
     sameSite: "lax",
     maxAge: TOKEN_EXP_SECONDS * 1000
   });
 
-  res.json({ ok: true, expiresIn: TOKEN_EXP_SECONDS });
+  res.json({ ok: true });
 });
 
-// Logout (clear token)
 app.post("/api/logout", (req, res) => {
   res.clearCookie(TOKEN_NAME);
   res.json({ ok: true });
 });
 
-// Get channels (protected)
 app.get("/api/channels", authMiddleware, (req, res) => {
   const channels = loadChannels();
   res.json(channels);
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+// === Fallback to index.html for SPA routing ===
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});

@@ -1,182 +1,246 @@
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
-const jwt = require("jsonwebtoken");
-const cookieParser = require("cookie-parser");
+// server.js
+// Secure IPTV server — encrypted channel list, login page, proxy, ready for Render
+
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const crypto = require('crypto');
+const fetch = require('node-fetch');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
+app.use(helmet());
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-// === Render / Local settings ===
+// Rate limiting
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
+
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "replace_this_secret";
-const TOKEN_NAME = "iptv_token";
-const TOKEN_EXP_SECONDS = 24 * 60 * 60; // 24 hours
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_jwt_secret_in_prod';
+const ENC_SECRET = process.env.ENC_SECRET || 'change_this_enc_secret_32_bytes_long!';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'password';
 
-app.use(express.json());
-app.use(cookieParser());
+if (!process.env.JWT_SECRET || !process.env.ENC_SECRET) {
+  console.warn('WARNING: Set JWT_SECRET and ENC_SECRET environment variables in production.');
+}
 
-// === Load channels ===
-function loadChannels() {
-  const filePath = path.join(__dirname, "data", "channels.json");
-  if (!fs.existsSync(filePath)) return [];
+// -------------------------
+// Raw embedded channel list
+// -------------------------
+const rawChannels = [
+  {
+    "name": "TV5",
+    "logo": "https://logowik.com/content/uploads/images/tv5-philippines1731625551.logowik.com.webp",
+    "manifestUri": "https://qp-pldt-live-bpk-02-prod.akamaized.net/bpk-tv/tv5_hd/default1/index.mpd",
+    "clearKey": { "2615129ef2c846a9bbd43a641c7303ef": "07c7f996b1734ea288641a68e1cfdc4d" },
+    "category": "Local"
+  },
+  {
+    "name": "A2Z",
+    "logo": "https://i.ebayimg.com/images/g/3EoAAOSwuLxjH4JN/s-l300.png",
+    "manifestUri": "https://vod.nathcreqtives.com/1087/manifest.mpd",
+    "clearKey": { "31363231383437383231323033353237": "583130656f6d3267777a6d7235487858" },
+    "category": "Local"
+  },
+  {
+    "name": "Kapamilya",
+    "logo": "https://upload.wikimedia.org/wikipedia/en/thumb/f/f2/Kapamilya_Channel_Logo_2020.svg/2560px-Kapamilya_Channel_Logo_2020.svg.png",
+    "manifestUri": "https://vod.nathcreqtives.com/1286/manifest.mpd",
+    "clearKey": { "31363331363737343637333533323837": "71347339457958556439543650426e74" },
+    "category": "Local"
+  },
+  {
+    "name": "Jeepney TV",
+    "logo": "https://tse3.mm.bing.net/th/id/OIP.bnjFWbiXnqyPP8tHr9hkoAHaE0?pid=Api&P=0&h=180",
+    "manifestUri": "https://abslive.akamaized.net/dash/live/2028025/jeepneytv/manifest.mpd",
+    "clearKey": { "90ea4079e02f418db7b170e8763e65f0": "1bfe2d166e31d03eee86ee568bd6c272" },
+    "category": "Local"
+  }
+  // Add the rest of your channel list here
+];
+
+// -------------------------
+// AES-256-GCM encryption helpers
+// -------------------------
+function _deriveKey(secret) {
+  return crypto.createHash('sha256').update(secret).digest();
+}
+
+function encryptJSON(obj) {
+  const iv = crypto.randomBytes(12);
+  const key = _deriveKey(ENC_SECRET);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const plaintext = Buffer.from(JSON.stringify(obj), 'utf8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString('base64');
+}
+
+function decryptJSON(enc) {
   try {
-    const jsonData = fs.readFileSync(filePath, "utf8");
-    return JSON.parse(jsonData);
-  } catch (err) {
-    console.error("Error parsing channels.json:", err);
-    return [];
+    const data = Buffer.from(enc, 'base64');
+    const iv = data.slice(0, 12);
+    const tag = data.slice(12, 28);
+    const encrypted = data.slice(28);
+    const key = _deriveKey(ENC_SECRET);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    return JSON.parse(decrypted.toString('utf8'));
+  } catch (e) {
+    return null;
   }
 }
 
-// === Auth Middleware ===
-function authMiddleware(req, res, next) {
-  const token = req.cookies[TOKEN_NAME];
-  if (!token) return res.status(401).json({ error: "No token" });
+// -------------------------
+// Build internal CHANNELS with encrypted manifest & clearKey
+// -------------------------
+const CHANNELS = rawChannels.map((ch, i) => {
+  const item = { id: i + 1, name: ch.name, logo: ch.logo, category: ch.category || 'General' };
+  if (ch.manifestUri) item.encryptedManifest = encryptJSON({ manifestUri: ch.manifestUri });
+  if (ch.clearKey) item.encryptedClearKey = encryptJSON(ch.clearKey);
+  if (ch.url) item.encryptedUrl = encryptJSON({ url: ch.url });
+  return item;
+});
 
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+// -------------------------
+// JWT helpers
+// -------------------------
+function generateToken(payload = {}, opts = {}) {
+  return jwt.sign(payload, JWT_SECRET, { algorithm: 'HS256', expiresIn: opts.expiresIn || '24h' });
+}
+
+function extractToken(req) {
+  const auth = req.headers.authorization || '';
+  if (auth.startsWith('Bearer ')) return auth.slice(7);
+  if (req.query && req.query.token) return req.query.token;
+  return null;
+}
+
+function authMiddleware(req, res, next) {
+  const token = extractToken(req);
+  if (!token) return res.status(401).json({ error: 'token_required' });
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(401).json({ error: 'invalid_or_expired_token' });
     req.user = decoded;
     next();
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
+  });
 }
 
-// === Serve the main HTML directly from server.js ===
-app.get("/", (req, res) => {
-  const html = `
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IPTV Web Panel</title>
-    <style>
-      body { font-family: sans-serif; background: #121212; color: #fff; text-align: center; margin: 0; padding: 2rem; }
-      .login, .channels { max-width: 600px; margin: auto; }
-      input, button { padding: 10px; margin: 5px; border-radius: 8px; border: none; }
-      input { width: 200px; }
-      button { background: #2196f3; color: #fff; cursor: pointer; }
-      .channel-card { background: #1e1e1e; padding: 10px; margin: 10px; border-radius: 10px; display: inline-block; width: 180px; }
-      .channel-card img { width: 100%; border-radius: 8px; }
-      .watch-btn { display: block; margin-top: 6px; color: #00e676; text-decoration: none; font-weight: bold; }
-    </style>
-  </head>
-  <body>
-    <div id="loginSection" class="login">
-      <h2>Enter Access Code</h2>
-      <input type="text" id="accessCode" placeholder="Access code" />
-      <button id="loginBtn">Login</button>
-      <p id="loginMsg" style="color: red;"></p>
-    </div>
+// -------------------------
+// LOGIN endpoint (API)
+// -------------------------
+app.post('/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'missing_credentials' });
+  if (username !== ADMIN_USER || password !== ADMIN_PASS) return res.status(401).json({ error: 'invalid_credentials' });
+  const token = generateToken({ username, admin: true }, { expiresIn: '24h' });
+  return res.json({ token, expires_in: 24 * 60 * 60 });
+});
 
-    <div id="channelsSection" class="channels" style="display: none;">
-      <button id="logoutBtn" style="float:right;background:#f44336;">Logout</button>
-      <h2>Available Channels</h2>
-      <div id="channelList"></div>
-    </div>
-
-    <script>
-      async function loginUser() {
-        const code = document.getElementById("accessCode").value.trim();
-        const msg = document.getElementById("loginMsg");
-        msg.textContent = "";
-        try {
-          const res = await fetch("/api/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ accessCode: code })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "Login failed");
-          document.getElementById("loginSection").style.display = "none";
-          document.getElementById("channelsSection").style.display = "block";
-          loadChannels();
-        } catch (err) {
-          msg.textContent = err.message;
-        }
-      }
-
-      async function logoutUser() {
-        await fetch("/api/logout", { method: "POST", credentials: "include" });
-        document.getElementById("channelsSection").style.display = "none";
-        document.getElementById("loginSection").style.display = "block";
-      }
-
-      async function loadChannels() {
-        const list = document.getElementById("channelList");
-        list.innerHTML = "<p>Loading channels...</p>";
-        try {
-          const res = await fetch("/api/channels", { credentials: "include" });
-          if (!res.ok) {
-            if (res.status === 401) {
-              logoutUser();
-              alert("Session expired. Please log in again.");
-              return;
+// -------------------------
+// LOGIN PAGE
+// -------------------------
+app.get('/login', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Secure IPTV Login</title>
+      <style>
+        body { font-family: sans-serif; background: #121212; color: #eee; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .login-box { background: #1f1f1f; padding: 20px; border-radius: 10px; width: 300px; text-align: center; }
+        input { width: 100%; padding: 10px; margin: 10px 0; border-radius: 5px; border: none; }
+        button { width: 100%; padding: 10px; border-radius: 5px; background: #4caf50; color: white; border: none; cursor: pointer; }
+        button:hover { background: #45a049; }
+        .msg { margin-top: 10px; color: #f44336; }
+      </style>
+    </head>
+    <body>
+      <div class="login-box">
+        <h2>IPTV Login</h2>
+        <input id="username" placeholder="Username" />
+        <input id="password" type="password" placeholder="Password" />
+        <button onclick="login()">Login</button>
+        <div class="msg" id="msg"></div>
+      </div>
+      <script>
+        async function login() {
+          const username = document.getElementById('username').value;
+          const password = document.getElementById('password').value;
+          const msg = document.getElementById('msg');
+          msg.textContent = '';
+          try {
+            const res = await fetch('/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username, password })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              localStorage.setItem('iptv_token', data.token);
+              window.location.href = '/index.html';
+            } else {
+              msg.textContent = data.error || 'Login failed';
             }
-            throw new Error("Failed to load channels");
+          } catch (err) {
+            msg.textContent = 'Server error';
           }
-          const channels = await res.json();
-          list.innerHTML = "";
-          if (!channels.length) {
-            list.innerHTML = "<p>No channels available.</p>";
-            return;
-          }
-          channels.forEach((ch) => {
-            const div = document.createElement("div");
-            div.className = "channel-card";
-            div.innerHTML = \`
-              <img src="\${ch.logo}" alt="\${ch.name}" />
-              <h3>\${ch.name}</h3>
-              <p>\${ch.category || ""}</p>
-              <a href="\${ch.manifestUri}" target="_blank" class="watch-btn">▶ Watch</a>
-            \`;
-            list.appendChild(div);
-          });
-        } catch (err) {
-          list.innerHTML = "<p>Error: " + err.message + "</p>";
         }
-      }
-
-      document.addEventListener("DOMContentLoaded", () => {
-        document.getElementById("loginBtn").addEventListener("click", loginUser);
-        document.getElementById("logoutBtn").addEventListener("click", logoutUser);
-      });
-    </script>
-  </body>
-  </html>
-  `;
-  res.send(html);
+      </script>
+    </body>
+    </html>
+  `);
 });
 
-// === Token routes ===
-app.post("/api/login", (req, res) => {
-  const { accessCode } = req.body;
-  if (process.env.ACCESS_CODE && accessCode !== process.env.ACCESS_CODE) {
-    return res.status(403).json({ error: "Invalid access code" });
-  }
-
-  const token = jwt.sign({ access: "iptv_user" }, JWT_SECRET, { expiresIn: TOKEN_EXP_SECONDS });
-
-  res.cookie(TOKEN_NAME, token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    maxAge: TOKEN_EXP_SECONDS * 1000
+// -------------------------
+// CHANNEL LIST API
+// -------------------------
+app.get('/api/channels', authMiddleware, (req, res) => {
+  const channelsSafe = CHANNELS.map(ch => {
+    const playToken = jwt.sign({ channelId: ch.id, username: req.user.username || 'unknown' }, JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h' });
+    return { id: ch.id, name: ch.name, logo: ch.logo, category: ch.category, play_url: `/play/${playToken}` };
   });
-
-  res.json({ ok: true });
+  res.json({ channels: channelsSafe });
 });
 
-app.post("/api/logout", (req, res) => {
-  res.clearCookie(TOKEN_NAME);
-  res.json({ ok: true });
+// -------------------------
+// PLAY proxy
+// -------------------------
+app.get('/play/:playToken', async (req, res) => {
+  const { playToken } = req.params;
+  try {
+    const payload = jwt.verify(playToken, JWT_SECRET);
+    const ch = CHANNELS.find(c => c.id === payload.channelId);
+    if (!ch) return res.status(404).json({ error: 'channel_not_found' });
+
+    let sourceInfo = ch.encryptedManifest ? decryptJSON(ch.encryptedManifest) : decryptJSON(ch.encryptedUrl);
+    if (!sourceInfo) return res.status(500).json({ error: 'source_unavailable' });
+    const sourceUrl = sourceInfo.manifestUri || sourceInfo.url;
+    if (!sourceUrl) return res.status(500).json({ error: 'invalid_source' });
+
+    const upstream = await fetch(sourceUrl, { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0 (Secure-IPTV)' }, redirect: 'follow' });
+    res.status(upstream.status);
+    const contentType = upstream.headers.get('content-type');
+    if (contentType) res.setHeader('content-type', contentType);
+    if (!upstream.body) return res.status(502).json({ error: 'empty_upstream_body' });
+    upstream.body.pipe(res);
+  } catch (err) {
+    return res.status(401).json({ error: 'invalid_or_expired_play_token' });
+  }
 });
 
-app.get("/api/channels", authMiddleware, (req, res) => {
-  const channels = loadChannels();
-  res.json(channels);
-});
+// -------------------------
+// Health
+// -------------------------
+app.get('/health', (req, res) => res.json({ ok: true }));
 
-app.listen(PORT, () => console.log(`✅ IPTV Server running on port ${PORT}`));
+// 404 fallback
+app.use((req, res) => res.status(404).json({ error: 'not_found' }));
+
+app.listen(PORT, () => console.log(`Secure IPTV server listening on port ${PORT}`));

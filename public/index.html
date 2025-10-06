@@ -3061,43 +3061,64 @@ async function loadChannels() {
   }
 }
 
-async function flipChannel(index) {
-  if (index === currentChannelIndex) return;
-  currentChannelIndex = index;
-  const channel = channels[index];
-  if (!channel) return;
-  localStorage.setItem('lastChannelIndex', index);
+let channels = [];
+let currentChannelIndex = null;
+const video = document.getElementById('video');
 
-  // Cleanup previous HLS
-  if (window.hls) { window.hls.destroy(); window.hls = null; }
+async function loadChannels() {
+  const token = localStorage.getItem('iptv_token');
+  if(!token){ alert('Login required'); window.location.href='/login'; return; }
 
-  const url = channel.play_url;
-  if (!url) return;
+  try {
+    const res = await fetch('/api/channels', { headers: { 'Authorization': 'Bearer '+token } });
+    if(!res.ok){ localStorage.removeItem('iptv_token'); alert('Token expired'); window.location.href='/login'; return; }
+    channels = await res.json();
 
-  // HLS
-  if (url.endsWith('.m3u8')) {
-    if (Hls.isSupported()) {
-      window.hls = new Hls({ enableWorker:true, lowLatencyMode:true });
-      window.hls.attachMedia(video);
-      window.hls.loadSource(url);
-      window.hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
-      window.hls.on(Hls.Events.ERROR, (event, data) => { if (data.fatal) flipChannel(index); });
-    } else { video.src = url; video.play().catch(()=>{}); }
-  }
-  // DASH
-  else if (url.endsWith('.mpd')) {
-    if (window.player) { await window.player.load(url); video.play().catch(()=>{}); }
-  }
-  // fallback
-  else { video.src = url; video.play().catch(()=>{}); }
+    const container = document.getElementById('channelCategories');
+    container.innerHTML = '';
+    channels.forEach((ch, idx)=>{
+      const div = document.createElement('div');
+      div.className='channel';
+      div.dataset.index=idx;
+      div.innerHTML=`<img src="${ch.logo}" /><div>${ch.name}</div>`;
+      div.addEventListener('click', ()=>flipChannel(idx));
+      container.appendChild(div);
+    });
 
-  // Highlight selected channel
-  document.querySelectorAll('.channel').forEach(el => el.classList.remove('active', 'border-yellow-500'));
-  const card = document.querySelector(`.channel[data-index="${index}"]`);
-  if (card) card.classList.add('active', 'border-2', 'border-yellow-500');
+    const savedIndex = parseInt(localStorage.getItem('lastChannelIndex')) || 0;
+    flipChannel(savedIndex);
+
+  } catch(e){ console.error(e); alert('Failed to load channels'); }
 }
 
-// Initialize
+async function flipChannel(index){
+  if(index===currentChannelIndex) return;
+  currentChannelIndex=index;
+  const channel = channels[index];
+  if(!channel) return;
+  localStorage.setItem('lastChannelIndex',index);
+
+  if(window.hls){ window.hls.destroy(); window.hls=null; }
+
+  const url = channel.play_url;
+  if(!url) return;
+
+  if(url.endsWith('.m3u8')){
+    if(Hls.isSupported()){
+      window.hls=new Hls({ enableWorker:true, lowLatencyMode:true });
+      window.hls.attachMedia(video);
+      window.hls.loadSource(url);
+      window.hls.on(Hls.Events.MANIFEST_PARSED, ()=>video.play().catch(()=>{}));
+    } else { video.src=url; video.play().catch(()=>{}); }
+  } else if(url.endsWith('.mpd')){
+    if(window.player){ await window.player.load(url); video.play().catch(()=>{}); }
+  } else { video.src=url; video.play().catch(()=>{}); }
+
+  document.querySelectorAll('.channel').forEach(el=>el.classList.remove('active'));
+  const card = document.querySelector(`.channel[data-index="${index}"]`);
+  if(card) card.classList.add('active');
+}
+
 window.addEventListener('DOMContentLoaded', loadChannels);
 
 // ---------------------- Runtime helpers exposed ------------------------
@@ -4696,4 +4717,5 @@ window.addEventListener("resize", ()=>{ if(radioPanel.classList.contains("open")
 
 </body>
 </html>
+
 

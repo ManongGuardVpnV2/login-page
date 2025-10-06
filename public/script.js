@@ -1,5 +1,5 @@
 
-<script>
+
     const player = new shaka.Player(document.getElementById('video'));
     const video = document.getElementById('video');
     const playPauseBtn = document.getElementById('playPauseBtn');
@@ -3137,5 +3137,6 @@ document.addEventListener("touchend", endDrag);
 
 window.addEventListener("resize", ()=>{ if(radioPanel.classList.contains("open")) updatePanelPosition(); });
 
-</script>
+
+
 

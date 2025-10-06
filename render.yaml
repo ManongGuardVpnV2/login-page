@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: iptv-web
+    env: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: JWT_SECRET
+        value: "<replace_with_strong_secret>"
+      - key: ADMIN_USER
+        value: "<Madcrazybone>"
+      - key: ADMIN_PASS
+        value: "<Mhierob25>"
+      - key: PORT
+        value: "10000"

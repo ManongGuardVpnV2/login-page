@@ -2998,121 +2998,107 @@ function configureForMobileData({ playerInstance, hlsInstance } = {}) {
 }
 
 // ---------------------- Flip channel (main playback switch) ------------------------
-async function flipChannel(card, index) {
-  if (typeof currentChannelIndex !== 'undefined' && index === currentChannelIndex) return;
+let channels = [];
+let currentChannelIndex = null;
+const video = document.getElementById('video');
+
+async function loadChannels() {
+  const token = localStorage.getItem('iptv_token');
+  if (!token) { 
+    alert('Please login'); 
+    window.location.href='/login'; 
+    return; 
+  }
+
+  try {
+    const res = await fetch('/api/channels', { headers: { 'Authorization': 'Bearer ' + token } });
+    if (!res.ok) { 
+      localStorage.removeItem('iptv_token'); 
+      alert('Token expired'); 
+      window.location.href='/login'; 
+      return; 
+    }
+
+    channels = await res.json();
+
+    // Group channels by category
+    const categories = {};
+    channels.forEach((ch, idx) => {
+      const cat = ch.category || 'General';
+      if (!categories[cat]) categories[cat] = [];
+      categories[cat].push({ ...ch, index: idx });
+    });
+
+    const container = document.getElementById('channelCategories');
+    container.innerHTML = '';
+
+    for (const [catName, catChannels] of Object.entries(categories)) {
+      const section = document.createElement('div');
+      section.innerHTML = `<h2 class="text-white font-bold mb-2">${catName}</h2>`;
+      const grid = document.createElement('div');
+      grid.className = 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-4';
+      
+      catChannels.forEach(ch => {
+        const card = document.createElement('div');
+        card.className = 'channel cursor-pointer bg-gray-800 p-2 rounded flex flex-col items-center';
+        card.dataset.index = ch.index;
+        card.innerHTML = `<img src="${ch.logo}" class="w-20 h-12 object-contain mb-1" /><span class="text-sm text-white text-center">${ch.name}</span>`;
+        card.addEventListener('click', () => flipChannel(ch.index));
+        grid.appendChild(card);
+      });
+
+      section.appendChild(grid);
+      container.appendChild(section);
+    }
+
+    // Auto-play last saved or first channel
+    const savedIndex = parseInt(localStorage.getItem('lastChannelIndex')) || 0;
+    flipChannel(savedIndex);
+
+  } catch(e) {
+    console.error(e);
+    alert('Failed to load channels');
+  }
+}
+
+async function flipChannel(index) {
+  if (index === currentChannelIndex) return;
   currentChannelIndex = index;
   const channel = channels[index];
   if (!channel) return;
+  localStorage.setItem('lastChannelIndex', index);
 
-  console.log('🎬 Switching to', channel.name);
-  document.querySelectorAll('.channel').forEach(el => el.classList.remove('active', 'flipped'));
-  if (card) card.classList.add('active', 'flipped');
-  const channelNameEl = document.getElementById('channelName'); if (channelNameEl) channelNameEl.textContent = channel.name;
-  try { localStorage.setItem('lastChannelIndex', index); } catch (e) {}
-  if (typeof video !== 'undefined' && video) video.muted = false;
+  // Cleanup previous HLS
+  if (window.hls) { window.hls.destroy(); window.hls = null; }
 
-  // cleanup previous session
-  if (window.hls) { try { window.hls.destroy(); } catch(e) {} window.hls = null; }
-  if (bufferWatcher) { clearInterval(bufferWatcher); bufferWatcher = null; }
-  try { await player.unload().catch(()=>{}); } catch(e) {}
+  const url = channel.play_url;
+  if (!url) return;
 
-  const onMobile = isOnMobileData();
-  if (onMobile) {
-    console.log('📱 Mobile data detected: disabling preloading & preferring low bitrate.');
-    configureForMobileData({ playerInstance: player, hlsInstance: window.hls });
-    teardownPrewarmedResources();
+  // HLS
+  if (url.endsWith('.m3u8')) {
+    if (Hls.isSupported()) {
+      window.hls = new Hls({ enableWorker:true, lowLatencyMode:true });
+      window.hls.attachMedia(video);
+      window.hls.loadSource(url);
+      window.hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
+      window.hls.on(Hls.Events.ERROR, (event, data) => { if (data.fatal) flipChannel(index); });
+    } else { video.src = url; video.play().catch(()=>{}); }
   }
-
-  try { applyConnectionCaps(); } catch (e) {}
-  try { const cat = getConnectionCategory(); if (cat === 'wifi' || cat === '5g') promoteToHighestAllowedTierNow(); } catch (e) {}
-
-  // Engine preferred
-  const canUseEngine = window.engine && channel.engineSupported;
-  if (canUseEngine) {
-    try {
-      window.engine.playChannelSafe(index);
-      currentFormat = 'engine';
-      setupEngineListeners(channel);
-      startDeadStreamWatchdog(channel, index);
-      if (!onMobile) prewarmSurroundingChannels(index);
-      if (onMobile) try { if (typeof window.engine.configure === 'function') window.engine.configure?.({ abr: { restrictions: { maxBandwidth: QUALITY_TIERS.find(t => t.key === 'med').maxBitrate } } }); } catch (e) {}
-      console.log(`🚀 Playing ${channel.name} via Engine (preferred)`);
-      return;
-    } catch (e) { console.warn(`⚠️ Engine failed for ${channel.name}, falling back`, e); }
+  // DASH
+  else if (url.endsWith('.mpd')) {
+    if (window.player) { await window.player.load(url); video.play().catch(()=>{}); }
   }
+  // fallback
+  else { video.src = url; video.play().catch(()=>{}); }
 
-  // DASH fallback
-  if (channel.manifestUri?.endsWith('.mpd')) {
-    try {
-      const dashConfig = { drm: { clearKeys: channel.clearKey || {} }, streaming: { lowLatencyMode: true, jumpLargeGaps: true }, abr: { enabled: true } };
-      if (onMobile && player) dashConfig.abr = { enabled: true, restrictions: { maxBandwidth: QUALITY_TIERS.find(t => t.key === 'med').maxBitrate } };
-      player.configure(dashConfig);
-      player.addEventListener('error', () => restartChannel(channel, index));
-      await player.load(channel.manifestUri);
-      // enforce tier
-      enforceEngineTier(player, ALLOWED_TIERS);
-      await (typeof video !== 'undefined' && video ? video.play().catch(()=>{}) : Promise.resolve());
-      currentFormat = 'dash';
-      startDeadStreamWatchdog(channel, index);
-      if (!onMobile) prewarmSurroundingChannels(index);
-      console.log(`✅ Playing ${channel.name} via DASH fallback`);
-    } catch (e) { console.warn('DASH fallback failed', e); restartChannel(channel, index); }
-    return;
-  }
-
-  // HLS fallback
-  if (channel.url?.endsWith('.m3u8')) {
-    if (!Hls.isSupported()) {
-      video.src = channel.url;
-      video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
-      startDeadStreamWatchdog(channel, index);
-      if (!onMobile) prewarmSurroundingChannels(index);
-      return;
-    }
-
-    window.hls = new Hls({ enableWorker:true, lowLatencyMode:true });
-    window.hls.attachMedia(video);
-    window.hls.on(Hls.Events.MEDIA_ATTACHED, () => window.hls.loadSource(channel.url));
-    window.hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-      try {
-        const cat = getConnectionCategory();
-        const cap = getEffectiveMaxBandwidth(cat);
-        const desiredTier = chooseAllowedTierForBandwidth(cap);
-        const level = chooseHlsLevelByTier(window.hls, desiredTier.key);
-        if (level >= 0) {
-          window.hls.currentLevel = level;
-          window.hls.nextLevel = level;
-          window.hls.autoLevelCapping = level;
-          console.log('📉 HLS: applied tier level at manifest parsed ->', level, 'tier:', desiredTier.key);
-        } else {
-          try { window.hls.autoLevelCapping = -1; } catch (e) {}
-        }
-      } catch (e) { console.warn('HLS manifest handling error', e); }
-
-      if (onMobile) {
-        try {
-          const medIdx = chooseHlsLevelByTier(window.hls, 'med');
-          if (medIdx >= 0) { window.hls.currentLevel = medIdx; window.hls.nextLevel = medIdx; window.hls.autoLevelCapping = medIdx; }
-          console.log('📉 HLS: forced Med for mobile at manifest parsed');
-        } catch (e) { console.warn('Could not force mobile HLS level', e); }
-      }
-
-      // enforce tier switching
-      enforceHlsTierSwitching(window.hls, ALLOWED_TIERS);
-
-      video.play().catch(()=>{});
-      currentFormat = 'hls';
-      startDeadStreamWatchdog(channel, index);
-      if (!onMobile) prewarmSurroundingChannels(index);
-      console.log(`✅ Playing ${channel.name} via HLS fallback`);
-    });
-    window.hls.on(Hls.Events.ERROR, (event, data) => { if (data.fatal) restartChannel(channel, index); });
-    return;
-  }
-
-  // Unsupported
-  restartChannel(channel, index);
+  // Highlight selected channel
+  document.querySelectorAll('.channel').forEach(el => el.classList.remove('active', 'border-yellow-500'));
+  const card = document.querySelector(`.channel[data-index="${index}"]`);
+  if (card) card.classList.add('active', 'border-2', 'border-yellow-500');
 }
+
+// Initialize
+window.addEventListener('DOMContentLoaded', loadChannels);
 
 // ---------------------- Runtime helpers exposed ------------------------
 function setAllowedTiers(tiersArray) {
@@ -3260,53 +3246,6 @@ function debounce(fn, delay) {
     timeout = setTimeout(() => fn(...args), delay);
   };
 }
-
-// ========================
-// Channel / Category Logic
-// ========================
-async function loadChannels() {
-  try {
-    const token = localStorage.getItem('iptv_token');
-    if (!token) {
-      alert('Please login first.');
-      window.location.href = '/login';
-      return;
-    }
-
-    const res = await fetch('/api/channels', {
-      headers: {
-        'Authorization': 'Bearer ' + token
-      }
-    });
-
-    if (!res.ok) {
-      localStorage.removeItem('iptv_token');
-      alert('Token expired or invalid. Please login again.');
-      window.location.href = '/login';
-      return;
-    }
-
-    channels = await res.json();
-
-    renderCategoryFilters();
-    renderChannelRows();
-
-    // Auto-play last saved channel or first channel
-    const savedIndex = parseInt(localStorage.getItem('lastChannelIndex'));
-    const initialIndex = (!isNaN(savedIndex) && channels[savedIndex]) ? savedIndex : 0;
-    const card = document.querySelector(`.channel[data-index="${initialIndex}"]`);
-
-    // Auto-play
-    flipChannel(card, initialIndex);
-
-    // ✅ No need for engine.playChannelInstant here, flipChannel already handles it
-
-  } catch (err) {
-    console.error('❌ Failed to load channels:', err);
-    alert('Failed to load channels. Check server connection.');
-  }
-}
-
 
 
 
@@ -4757,3 +4696,4 @@ window.addEventListener("resize", ()=>{ if(radioPanel.classList.contains("open")
 
 </body>
 </html>
+

@@ -1,7 +1,6 @@
 {
   "name": "iptv-token-login",
   "version": "1.0.0",
-  "description": "IPTV Web App with 24-hour token login",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

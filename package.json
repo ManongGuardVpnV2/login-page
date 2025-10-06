@@ -1,11 +1,14 @@
 {
-  "name": "iptv-secure",
+  "name": "iptv-token-login",
   "version": "1.0.0",
-  "type": "module",
-  "engines": {
-    "node": "18.x"
-  },
+  "description": "IPTV Web App with 24-hour token login",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2"
   }
 }

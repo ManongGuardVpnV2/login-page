@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2998,9 +2999,6 @@ function configureForMobileData({ playerInstance, hlsInstance } = {}) {
 }
 
 // ---------------------- Flip channel (main playback switch) ------------------------
-let channels = [];
-let currentChannelIndex = null;
-const video = document.getElementById('video');
 
 async function loadChannels() {
   const token = localStorage.getItem('iptv_token');
@@ -3063,7 +3061,6 @@ async function loadChannels() {
 
 let channels = [];
 let currentChannelIndex = null;
-const video = document.getElementById('video');
 
 async function loadChannels() {
   const token = localStorage.getItem('iptv_token');
@@ -3230,8 +3227,6 @@ document.addEventListener('click', (e) => {
 // ========================
 // Global Variables
 // ========================
-let channels = [];
-let currentChannelIndex = -1;
 let selectedCategory = 'Local';
 let searchQuery = '';
 let focusedCategoryIndex = 0;
